@@ -41,7 +41,7 @@ fig = plt.figure(figsize=(row*4, col))
 
 while t < t_limit:
     t += 1
-    ratio = weight_function(2, t)
+    ratio = weight_function(t, 2)
     z = np.random.rand(im.shape[0], im.shape[1]) * ratio
 
     new_im = new_im + z
