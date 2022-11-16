@@ -87,31 +87,29 @@ https://blog.lunit.io/2018/04/12/group-normalization/
 """
 
 class ScoreNet2D(nn.Module):
-    def __init__(self, in_channel = 1, n_channels = [6, 12, 24, 48], kernel_size=3, embed_dim=256):
+    def __init__(self, in_channel = 1, n_channels = [6, 12, 24, 48], kernel_size=2, embed_dim=256):
         super(ScoreNet2D, self).__init__()
         self.embed = GaussianFourierProjection(embed_dim=embed_dim)
         self.fc1 = nn.Linear(embed_dim, embed_dim, device=DEVICE)
         self.conv1 = nn.Conv2d(in_channel, n_channels[0], kernel_size=kernel_size, stride=1, device=DEVICE)
-        self.gn1 = nn.GroupNorm(n_channels[0], n_channels[1], device=DEVICE)
+        self.gn1 = nn.GroupNorm(n_channels[0], n_channels[0], device=DEVICE)
         # self.gnorm1 = nn.GroupNorm(6, 6, device=DEVICE)
         self.relu1 = nn.ReLU()
         self.pool1 = nn.MaxPool2d(kernel_size=2)
 
-        self.conv2 = nn.Conv2d(n_channels[1], n_channels[2], kernel_size=kernel_size, stride=1, device=DEVICE)
+        self.conv2 = nn.Conv2d(n_channels[0], n_channels[1], kernel_size=kernel_size, stride=1, device=DEVICE)
         # self.gnorm2 = nn.GroupNorm(n_channels[1], n_channels[2], device=DEVICE)
-        self.gn2 = nn.GroupNorm(n_channels[2], n_channels[3], device=DEVICE)
+        self.gn2 = nn.GroupNorm(n_channels[1], n_channels[1], device=DEVICE)
         self.relu2 = nn.ReLU()
         self.pool2 = nn.MaxPool2d(kernel_size=2)
 
 
         # Decode layers 
         # ConvTranspose2d : https://cumulu-s.tistory.com/29
-        self.tconv3 = nn.ConvTranspose2d(n_channels[3], n_channels[2], kernel_size=2, stride=1, device=DEVICE)
-        self.gn3 = nn.GroupNorm(n_channels[0], n_channels[2], device=DEVICE)
-        self.tconv4 = nn.ConvTranspose2d(n_channels[2], n_channels[1], kernel_size=2, stride=1, device=DEVICE)
-        self.gn4 = nn.GroupNorm(n_channels[0], n_channels[1], device=DEVICE)
-        self.tconv5 = nn.ConvTranspose2d(n_channels[1], n_channels[0], kernel_size=2, stride=1, device=DEVICE)
-        self.gn5 = nn.GroupNorm(n_channels[0], n_channels[0], device=DEVICE)
+        self.tconv3 = nn.ConvTranspose2d(n_channels[1], n_channels[1], kernel_size=2, stride=1, device=DEVICE)
+        self.gn3 = nn.GroupNorm(n_channels[1], n_channels[1], device=DEVICE)
+        self.tconv4 = nn.ConvTranspose2d(n_channels[1], n_channels[0], kernel_size=2, stride=1, device=DEVICE)
+        self.gn4 = nn.GroupNorm(n_channels[0], n_channels[0], device=DEVICE)
         self.conv_final = nn.Conv2d(n_channels[1], 1, kernel_size=1, stride=1, padding=0, bias=True, device=DEVICE)
 
         self.act = lambda x: x * torch.sigmoid(x)
@@ -125,47 +123,45 @@ class ScoreNet2D(nn.Module):
         pp(x_embed.size())
         x_fc1 = self.fc1(x_embed)
         x_conv1 = self.conv1(x_fc1)
-        pp(x_conv1.size())
+        pp(f"x_conv1 : {x_conv1.size()}")
         x_gn1 = self.gn1(x_conv1)
-        pp(x_gn1.size())
+        pp(f"x_gn1 : {x_gn1.size()}")
         x_relu1 = self.relu1(x_gn1)
-        pp(x_relu1.size())
+        pp(f"x_relu1 : {x_relu1.size()}")
         x_pool1 = self.pool1(x_relu1)
-        pp(x_pool1.size())
+        pp(f"x_pool1 : {x_pool1.size()}")
         x_conv2 = self.conv2(x_pool1)
-        pp(x_conv2.size())
+        pp(f"x_conv2 : {x_conv2.size()}")
         x_gn2 = self.gn2(x_conv2)
-        pp(x_gn2.size())
+        pp(f"x_gn2 : {x_gn2.size()}")
         x_relu2 = self.relu2(x_gn2)
-        pp(x_relu2.size())
+        pp(f"x_relu2 : {x_relu2.size()}")
         x_pool2 = self.pool2(x_relu2)
-        pp(x_pool2.size())
+        pp(f"x_pool2 : {x_pool2.size()}")
 
         x_act = self.act(x_pool2)
         
         x_tconv3 = self.tconv3(x_act)
-        pp(x_tconv3.size())
+        pp(f"x_tconv3 : {x_tconv3.size()}")
         x_cat1 = torch.cat((x_conv1, x_tconv3), dim=1)
         x_gn3 = self.gn3(x_cat1)
-        pp(x_gn3.size())
+        pp(f"x_gn3 : {x_gn3.size()}")
 
         x_tconv4 = self.tconv4(x_gn3)      
-        pp(x_tconv4.size())  
+        pp(f"x_tconv4 : {x_tconv4.size()}") 
         x_cat2 = torch.cat((x_conv2, x_tconv4), dim=1)
-        pp(x_cat2.size())  
+        pp(f"x_cat2 : {x_cat2.size()}")
         x_gn4 = self.gn4(x_cat2)
-        pp(x_tconv4.size())  
-        x_tconv5 = self.tconv5(x_gn4)
-        x_gn5 = self.gn5(x_tconv5)
-        x_final = self.conv_final(x_gn5) / marginal_prob_std(t)[:, None, None, None]
+        pp(f"x_gn4 : {x_tconv4.size()}")
+        x_final = self.conv_final(x_gn4) / marginal_prob_std(t)[:, None, None, None]
 
         return x_final
 
 
 
 def unit_test():
-    x_height = 3
-    y_height = 4
+    x_height = 30
+    y_height = 40
     n_batch = 10
     scoreNet = ScoreNet2D(1, embed_dim=y_height * 2)
     print(scoreNet)
