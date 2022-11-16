@@ -8,7 +8,21 @@ from functools import partial
 import functools
 import matplotlib.pylab as plt
 
+
+
+
+
+
 """ test code """
+
+# With Learnable Parameters
+m = nn.BatchNorm2d(100)
+# Without Learnable Parameters
+# m = nn.BatchNorm2d(100, affine=False)
+input = torch.randn(20, 100, 35, 45)
+output = m(input)
+print(output.shape)
+
 embed_dim = 256; scale = 30
 torch.randn(embed_dim // 2)
 W = nn.Parameter(torch.randn(embed_dim // 2) * scale, requires_grad=False)

@@ -3,24 +3,29 @@ import torch.nn as nn
 import torch.nn.functional as F
 from Contant import DEVICE
 import numpy as np
+from cPrint import pp
+from Torch_Utils import convert_to_torch_tensor
 
-verbose = True
-
-def pp(txt):
-    if verbose is True:
-        print(txt)
 
 class GaussianFourierProjection(nn.Module):
   """Gaussian random features for encoding time steps."""  
   def __init__(self, embed_dim, scale=30.):
     super().__init__()
-    # Randomly sample weights during initialization. These weights are fixed 
-    # during optimization and are not trainable.
-    self.W = nn.Parameter(torch.randn(embed_dim // 2) * scale, requires_grad=False)
-    print(f"W size : {self.W.size()}")
+    self.W = None
+    self.scale = 30
   def forward(self, x):
-    x_proj = x[:, None] * self.W[None, :] * 2 * np.pi
-    return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
+    """
+    x : [n_batch, n_channel, width, height]
+    """    
+    self.W = nn.Parameter(torch.randn(x.shape[2], x.shape[3]) * self.scale, requires_grad=False).to(DEVICE)
+    x_proj = torch.zeros(x.shape[0], x.shape[1], x.shape[2], x.shape[3] * 2)
+    for i in range(x.shape[0]):
+        for j in range(x.shape[1]):
+            tmp = x[i, j, :, :] * self.W * 2 * np.pi
+            test = torch.cat([torch.sin(tmp), torch.cos(tmp)], dim=-1).to(DEVICE)
+            test2 = x_proj[i, j, :, :]
+            x_proj[i, j, :, :] = torch.cat([torch.sin(tmp), torch.cos(tmp)], dim=-1).to(DEVICE)
+    return x_proj
 
 def marginal_prob_std(t, sigma):
     """Compute the mean and standard deviation of $p_{0t}(x(t) | x(0))$.
@@ -71,81 +76,102 @@ class NeuralNet(nn.Module):
 
 """
 ScoreNet: input의 ㅣog probability를 학습하는 녀석
-channels, stride 설명 : http://taewan.kim/post/cnn/
+channels, stride 설명 : 칼라갯수 또는 예측하고자 하는 클래스 수, filter가 이동하는 거리
+http://taewan.kim/post/cnn/
 https://justkode.kr/deep-learning/pytorch-cnn
+
+Group Normalization :  batch의 크기가 극도로 작은 상황에서 batch normalization 대신 사용하면 좋은 normalization 기술
+LN과 IN의 절충된 형태로 볼 수 있는데, 각 채널을 N개의 group으로 나누어 normalize 시켜주는 기술입니다.
+https://blog.lunit.io/2018/04/12/group-normalization/
+
 """
 
 class ScoreNet2D(nn.Module):
-    def __init__(self, in_channel = 1, n_channel = 1, kernel_size=3, embed_dim=256):
+    def __init__(self, in_channel = 1, n_channels = [6, 12, 24, 48], kernel_size=3, embed_dim=256):
         super(ScoreNet2D, self).__init__()
-        self.embed_dim = embed_dim
-        self.n_channel = n_channel
-        self.embed = nn.Sequential(GaussianFourierProjection(embed_dim=embed_dim), \
-         nn.Linear(embed_dim, embed_dim))
-        self.conv1 = nn.Conv2d(in_channel, 12, kernel_size=kernel_size, stride=1, device=DEVICE)
-        self.bn1 = nn.GroupNorm(12, 12, device=DEVICE)
+        self.embed = GaussianFourierProjection(embed_dim=embed_dim)
+        self.fc1 = nn.Linear(embed_dim, embed_dim, device=DEVICE)
+        self.conv1 = nn.Conv2d(in_channel, n_channels[0], kernel_size=kernel_size, stride=1, device=DEVICE)
+        self.gn1 = nn.GroupNorm(n_channels[0], n_channels[1], device=DEVICE)
         # self.gnorm1 = nn.GroupNorm(6, 6, device=DEVICE)
         self.relu1 = nn.ReLU()
         self.pool1 = nn.MaxPool2d(kernel_size=2)
 
-        self.conv2 = nn.Conv2d(12, 24, kernel_size=kernel_size, stride=1, device=DEVICE)
-        # self.gnorm2 = nn.GroupNorm(12, 24, device=DEVICE)
-        self.bn2 = nn.GroupNorm(24, 24, device=DEVICE)
+        self.conv2 = nn.Conv2d(n_channels[1], n_channels[2], kernel_size=kernel_size, stride=1, device=DEVICE)
+        # self.gnorm2 = nn.GroupNorm(n_channels[1], n_channels[2], device=DEVICE)
+        self.gn2 = nn.GroupNorm(n_channels[2], n_channels[3], device=DEVICE)
         self.relu2 = nn.ReLU()
         self.pool2 = nn.MaxPool2d(kernel_size=2)
 
 
         # Decode layers 
         # ConvTranspose2d : https://cumulu-s.tistory.com/29
-        self.tconv3 = nn.ConvTranspose2d(24, 12, kernel_size=2, stride=1, device=DEVICE)
-        self.bn3 = nn.GroupNorm(12, 12, device=DEVICE)
-        self.tconv4 = nn.ConvTranspose2d(12, 6, kernel_size=2, stride=1, device=DEVICE)
-
-        self.fc = nn.Conv2d(6, 1, kernel_size=1, stride=1, padding=0, bias=True)
+        self.tconv3 = nn.ConvTranspose2d(n_channels[3], n_channels[2], kernel_size=2, stride=1, device=DEVICE)
+        self.gn3 = nn.GroupNorm(n_channels[0], n_channels[2], device=DEVICE)
+        self.tconv4 = nn.ConvTranspose2d(n_channels[2], n_channels[1], kernel_size=2, stride=1, device=DEVICE)
+        self.gn4 = nn.GroupNorm(n_channels[0], n_channels[1], device=DEVICE)
+        self.tconv5 = nn.ConvTranspose2d(n_channels[1], n_channels[0], kernel_size=2, stride=1, device=DEVICE)
+        self.gn5 = nn.GroupNorm(n_channels[0], n_channels[0], device=DEVICE)
+        self.conv_final = nn.Conv2d(n_channels[1], 1, kernel_size=1, stride=1, padding=0, bias=True, device=DEVICE)
 
         self.act = lambda x: x * torch.sigmoid(x)
         self.marginal_prob_std = marginal_prob_std
 
 
-    def forward(self, x):
+    def forward(self, x, t):
+        if type(x) == np.ndarray:
+            x = convert_to_torch_tensor(x)
         x_embed = self.embed(x)
-        pp(f"embed : {x_embed.size()}")
-        x_conv1 = self.conv1(x_embed)
-        pp(f"conv1 : {x_conv1.size()}")
-        x_bn1 = self.bn1(x_conv1)
-        pp(f"bn1 : {x_bn1.size()}")
-        x_relu1 = self.relu1(x_bn1)
-        pp(f"relu1 : {x_relu1.size()}")
+        pp(x_embed.size())
+        x_fc1 = self.fc1(x_embed)
+        x_conv1 = self.conv1(x_fc1)
+        pp(x_conv1.size())
+        x_gn1 = self.gn1(x_conv1)
+        pp(x_gn1.size())
+        x_relu1 = self.relu1(x_gn1)
+        pp(x_relu1.size())
         x_pool1 = self.pool1(x_relu1)
-        pp(f"pool1 : {x_pool1.size()}")
+        pp(x_pool1.size())
         x_conv2 = self.conv2(x_pool1)
-        pp(f"conv2 : {x_conv2.size()}")
-        x_bn2 = self.bn2(x_conv2)
-        pp(f"bn2 : {x_bn2.size()}")
-        x_relu2 = self.relu2(x_bn2)
-        pp(f"relu2 : {x_relu2.size()}")
+        pp(x_conv2.size())
+        x_gn2 = self.gn2(x_conv2)
+        pp(x_gn2.size())
+        x_relu2 = self.relu2(x_gn2)
+        pp(x_relu2.size())
         x_pool2 = self.pool2(x_relu2)
-        pp(f"pool2 : {x_pool2.size()}")
+        pp(x_pool2.size())
 
         x_act = self.act(x_pool2)
+        
         x_tconv3 = self.tconv3(x_act)
-        pp(f"tconv3 : {x_tconv3.size()}")
-        x_cat1 = torch.cat((x_tconv3, x_pool2), dim=1)
-        x_bn3 = self.bn3(x_cat1)
-        pp(f"bn3 : {x_bn3.size()}")
+        pp(x_tconv3.size())
+        x_cat1 = torch.cat((x_conv1, x_tconv3), dim=1)
+        x_gn3 = self.gn3(x_cat1)
+        pp(x_gn3.size())
 
-        x_tconv4 = self.tconv4(x_bn3)      
-        pp(f"tconv4 : {x_tconv4.size()}")  
-        x_cat2 = torch.cat((x_tconv4, x_pool2), dim=1)
-        x_fc = self.fc(x_cat2)
+        x_tconv4 = self.tconv4(x_gn3)      
+        pp(x_tconv4.size())  
+        x_cat2 = torch.cat((x_conv2, x_tconv4), dim=1)
+        pp(x_cat2.size())  
+        x_gn4 = self.gn4(x_cat2)
+        pp(x_tconv4.size())  
+        x_tconv5 = self.tconv5(x_gn4)
+        x_gn5 = self.gn5(x_tconv5)
+        x_final = self.conv_final(x_gn5) / marginal_prob_std(t)[:, None, None, None]
 
-        return x_fc
+        return x_final
 
 
 
 def unit_test():
-    scoreNet = ScoreNet2D(1, 10, 2)
+    x_height = 3
+    y_height = 4
+    n_batch = 10
+    scoreNet = ScoreNet2D(1, embed_dim=y_height * 2)
     print(scoreNet)
+    input = torch.randn(n_batch, 1, x_height, y_height).to(DEVICE)
+    y = scoreNet(input, 1)
+    print(y)
 
 
 unit_test()
