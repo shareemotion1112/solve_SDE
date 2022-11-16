@@ -15,7 +15,7 @@ def convert_nparray_to_conv2d_input(input):
 
 
 def get_magnitude(tensor):
-    return torch.abs(tensor)
+    return torch.inner(torch.transpose(tensor, 0, 1), tensor)
 
 def get_trace(tensor):
     return torch.trace(tensor)
