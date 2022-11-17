@@ -9,7 +9,7 @@ from Torch_Utils import convert_to_torch_tensor
 
 class GaussianFourierProjection(nn.Module):
   """Gaussian random features for encoding time steps."""  
-  def __init__(self, embed_dim, scale=30.):
+  def __init__(self, scale=30.):
     super().__init__()
     self.W = None
     self.scale = 30
@@ -22,12 +22,10 @@ class GaussianFourierProjection(nn.Module):
     for i in range(x.shape[0]):
         for j in range(x.shape[1]):
             tmp = x[i, j, :, :] * self.W * 2 * np.pi
-            test = torch.cat([torch.sin(tmp), torch.cos(tmp)], dim=-1).to(DEVICE)
-            test2 = x_proj[i, j, :, :]
             x_proj[i, j, :, :] = torch.cat([torch.sin(tmp), torch.cos(tmp)], dim=-1).to(DEVICE)
     return x_proj
 
-def marginal_prob_std(t, sigma):
+def marginal_prob_std(t, sigma = 25):
     """Compute the mean and standard deviation of $p_{0t}(x(t) | x(0))$.
 
     Args:    
@@ -87,30 +85,40 @@ https://blog.lunit.io/2018/04/12/group-normalization/
 """
 
 class ScoreNet2D(nn.Module):
-    def __init__(self, in_channel = 1, n_channels = [6, 12, 24, 48], kernel_size=2, embed_dim=256):
+    def __init__(self, n_batch, n_channel, width, height, channels=[6, 12, 24, 48], kernel_size=2):
         super(ScoreNet2D, self).__init__()
-        self.embed = GaussianFourierProjection(embed_dim=embed_dim)
-        self.fc1 = nn.Linear(embed_dim, embed_dim, device=DEVICE)
-        self.conv1 = nn.Conv2d(in_channel, n_channels[0], kernel_size=kernel_size, stride=1, device=DEVICE)
-        self.gn1 = nn.GroupNorm(n_channels[0], n_channels[0], device=DEVICE)
-        # self.gnorm1 = nn.GroupNorm(6, 6, device=DEVICE)
+        self.embed = GaussianFourierProjection()
+        self.n_batch = n_batch
+        self.n_channel = n_channel
+        self.width = width
+        self.height = height
+        # Convolution, Dense(nn.Linear), Groupnormalization 순 : C -> D -> G
+
+
+        self.conv1 = nn.Conv2d(n_channel, channels[0], kernel_size=kernel_size, stride=1, padding=1, device=DEVICE)
+        self.gn1 = nn.GroupNorm(channels[0], channels[0], device=DEVICE)
         self.relu1 = nn.ReLU()
         self.pool1 = nn.MaxPool2d(kernel_size=2)
 
-        self.conv2 = nn.Conv2d(n_channels[0], n_channels[1], kernel_size=kernel_size, stride=1, device=DEVICE)
-        # self.gnorm2 = nn.GroupNorm(n_channels[1], n_channels[2], device=DEVICE)
-        self.gn2 = nn.GroupNorm(n_channels[1], n_channels[1], device=DEVICE)
+        self.conv2 = nn.Conv2d(channels[0], channels[1], kernel_size=kernel_size, stride=1, padding=1, device=DEVICE)
+        self.gn2 = nn.GroupNorm(channels[1], channels[1], device=DEVICE)
         self.relu2 = nn.ReLU()
         self.pool2 = nn.MaxPool2d(kernel_size=2)
 
 
         # Decode layers 
         # ConvTranspose2d : https://cumulu-s.tistory.com/29
-        self.tconv3 = nn.ConvTranspose2d(n_channels[1], n_channels[1], kernel_size=2, stride=1, device=DEVICE)
-        self.gn3 = nn.GroupNorm(n_channels[1], n_channels[1], device=DEVICE)
-        self.tconv4 = nn.ConvTranspose2d(n_channels[1], n_channels[0], kernel_size=2, stride=1, device=DEVICE)
-        self.gn4 = nn.GroupNorm(n_channels[0], n_channels[0], device=DEVICE)
-        self.conv_final = nn.Conv2d(n_channels[1], 1, kernel_size=1, stride=1, padding=0, bias=True, device=DEVICE)
+        self.tconv3 = nn.ConvTranspose2d(channels[1], channels[1], kernel_size=kernel_size, stride=2, padding=0, device=DEVICE)
+        self.gn3 = nn.GroupNorm(channels[1], channels[2], device=DEVICE)
+        self.tconv4 = nn.ConvTranspose2d(channels[2], channels[0], kernel_size=kernel_size, stride=2, padding=1, device=DEVICE)
+        self.gn4 = nn.GroupNorm(channels[0], channels[1], device=DEVICE)
+
+        self.conv_final = nn.Conv2d(channels[1], 1, kernel_size=1, stride=2, padding=0, device=DEVICE)
+
+        self.dense1_input_size = 1
+        # nn.Linear(n_channel * width * height, out_feature)
+        self.dense1 = nn.Linear(self.dense1_input_size, n_batch * n_channel * width * height, device=DEVICE)
+
 
         self.act = lambda x: x * torch.sigmoid(x)
         self.marginal_prob_std = marginal_prob_std
@@ -120,9 +128,7 @@ class ScoreNet2D(nn.Module):
         if type(x) == np.ndarray:
             x = convert_to_torch_tensor(x)
         x_embed = self.embed(x)
-        pp(x_embed.size())
-        x_fc1 = self.fc1(x_embed)
-        x_conv1 = self.conv1(x_fc1)
+        x_conv1 = self.conv1(x_embed)
         pp(f"x_conv1 : {x_conv1.size()}")
         x_gn1 = self.gn1(x_conv1)
         pp(f"x_gn1 : {x_gn1.size()}")
@@ -141,33 +147,56 @@ class ScoreNet2D(nn.Module):
 
         x_act = self.act(x_pool2)
         
-        x_tconv3 = self.tconv3(x_act)
+        # output_size 옵션으로 output의 dimension 조절
+        x_tconv3 = self.tconv3(x_act, output_size=(x_conv2.shape[2], x_conv2.shape[3]))
+        pp(f"x_conv2 : {x_conv2.size()}")
         pp(f"x_tconv3 : {x_tconv3.size()}")
-        x_cat1 = torch.cat((x_conv1, x_tconv3), dim=1)
+        x_cat1 = torch.cat((x_conv2, x_tconv3), dim=1)
+        pp(f"x_cat1 : {x_cat1.size()}")
         x_gn3 = self.gn3(x_cat1)
         pp(f"x_gn3 : {x_gn3.size()}")
 
-        x_tconv4 = self.tconv4(x_gn3)      
+        x_tconv4 = self.tconv4(x_gn3, output_size=(x_conv1.shape[2], x_conv1.shape[3]))      
         pp(f"x_tconv4 : {x_tconv4.size()}") 
-        x_cat2 = torch.cat((x_conv2, x_tconv4), dim=1)
+        x_cat2 = torch.cat((x_conv1, x_tconv4), dim=1)
         pp(f"x_cat2 : {x_cat2.size()}")
         x_gn4 = self.gn4(x_cat2)
         pp(f"x_gn4 : {x_tconv4.size()}")
-        x_final = self.conv_final(x_gn4) / marginal_prob_std(t)[:, None, None, None]
+        x_conv_final = self.conv_final(x_gn4)
+        pp(f"x_conv_final : {x_conv_final.size()}")
+        denominator = marginal_prob_std(t)
+        pp(f"t : {t}")
+        pp(f"denominator : {denominator.size()}")
 
-        return x_final
+        x = x_conv_final / denominator
+        self.dense1_input_size = x.shape[1] * x.shape[2] * x.shape[3]
+        pp(f" the dense1_input_size : {self.dense1_input_size}")
+        
+        x.view(self.n_batch, -1)
+        x = self.dense1(x)
+        pp(f" x : {x.shape}")
+        x = x.view(self.n_batch, -1)
+        pp(f" x : {x.shape}")
+        return x 
 
 
 
 def unit_test():
-    x_height = 30
-    y_height = 40
+    import matplotlib.pylab as plt
+    x_height = 300
+    y_height = 400
     n_batch = 10
-    scoreNet = ScoreNet2D(1, embed_dim=y_height * 2)
+    scoreNet = ScoreNet2D(n_batch=n_batch, n_channel=1, width=x_height, height=y_height)
     print(scoreNet)
     input = torch.randn(n_batch, 1, x_height, y_height).to(DEVICE)
     y = scoreNet(input, 1)
-    print(y)
+
+    yy = y[0, 0, :, :].detach().numpy()
+    plt.subplot(2, 1, 1)
+    plt.imshow(input[0, 0, :, :])
+    plt.subplot(2, 1, 2)
+    plt.imshow(yy)
+    plt.show()
 
 
 unit_test()
