@@ -48,8 +48,8 @@ while t < t_limit:
         fig.add_subplot(row, col, t)
         plt.imshow(new_im)
 
-    input = convert_to_torch_tensor(new_im)
-    input = convert_nparray_to_conv2d_input(input)
+    # input = convert_to_torch_tensor(new_im)
+    input = convert_torchtensor_to_conv2d_input(new_im)
     out = scoreNet(input)
     scoreNet.zero_grad()
     
