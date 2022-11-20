@@ -20,5 +20,5 @@ def get_magnitude(tensor):
 def get_trace(tensor):
     return torch.trace(tensor)
 
-def get_optimizer(net, learning_rate):
+def get_optimizer(net, learning_rate=1e-4):
     return torch.optim.Adam(net.parameters(), lr = learning_rate)

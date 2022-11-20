@@ -18,11 +18,12 @@ class GaussianFourierProjection(nn.Module):
     x : [n_batch, n_channel, width, height]
     """    
     self.W = nn.Parameter(torch.randn(x.shape[2], x.shape[3]) * self.scale, requires_grad=False).to(DEVICE)
-    x_proj = torch.zeros(x.shape[0], x.shape[1], x.shape[2], x.shape[3])
+    x_proj = torch.zeros(x.shape[0], x.shape[1] * 2, x.shape[2], x.shape[3])
     for i in range(x.shape[0]):
         for j in range(x.shape[1]):
             tmp = x[i, j, :, :] * self.W * 2 * np.pi
-            x_proj[i, j, :, :] = torch.sin(tmp) + torch.cos(tmp) # concat을 하던데 꼭 그럴 필요가 잇나싶음 ..... 체크 필요!!
+            m_cat = torch.cat((torch.sin(tmp)[None, :, :], torch.cos(tmp)[None, :, :]), dim=0)
+            x_proj[i, j:(j+2), :, :] = m_cat
     return x_proj
 
 def marginal_prob_std(t, sigma = 25):
@@ -35,7 +36,7 @@ def marginal_prob_std(t, sigma = 25):
     Returns:
     The standard deviation.
     """    
-    t = torch.tensor(t, device=DEVICE)
+    t = t.clone()
     return torch.sqrt((sigma**(2 * t) - 1.) / 2. / np.log(sigma))
 
 
@@ -51,12 +52,14 @@ def loss_fn(model, x, marginal_prob_std, eps=1e-5):
     eps: A tolerance value for numerical stability.
     """
     random_t = torch.rand(x.shape[0], device=x.device) * (1. - eps) + eps  # 왜 random T를 사용? int 스텝을 넣는게 아니네??
-    z = torch.randn_like(x)
+    # pp(x.size())
+    z = torch.randint(0, 255, x.size(), device=x.device)
     std = marginal_prob_std(random_t)
     perturbed_x = x + z * std[:, None, None, None]
     score = model(perturbed_x, random_t)
 
-    pp(f"score : {score.shape}, std : {std.shape}, z : {z.shape}"); pp(f"{(score * std[:, None, None, None] + z)**2}")
+    pp(f"perturbed x : {perturbed_x.shape}, score : {score.shape}, std : {std.shape}, z : {z.shape}") 
+    pp(f"{(score * std[:, None, None, None] + z)**2}")
     loss = torch.mean(torch.sum((score * std[:, None, None, None] + z)**2, dim=(1,2,3)))
     return loss
 
@@ -111,26 +114,21 @@ class UpSample(nn.Module):
     def __init__(self):
         super(UpSample, self).__init__()
         self.input_dim = 12
-        self.conv = None
         self.gn = None
 
     def tconv(self, n_ch):
         return nn.ConvTranspose2d(n_ch, n_ch, kernel_size=2, stride=2, padding=0)
+
+    def conv(self, n_ch):
+        return nn.Conv2d(n_ch, n_ch // 2, kernel_size=3, stride=1, padding=1)
         
     def forward(self, previous_x, x):
-        self.input_dim = x.shape[1]
-        self.conv = nn.Conv2d(self.input_dim, self.input_dim // 2, kernel_size=3, stride=1, padding=1)
-        # self.gn = nn.GroupNorm(self.input_dim // 2, self.input_dim // 2)        
-
-        x = self.conv(x)
-        pp(f"x : {x.shape}")
-        x = torch.cat([previous_x, x], dim=1)
+        x = self.conv(x.shape[1])(x)
         pp(f"shape check : {previous_x.shape} vs {x.shape}")
-        pp(f"x : {x.shape}")
-        self.input_dim = x.shape[1]
+        x = torch.cat([previous_x, x], dim=1); pp(f"x : {x.shape}")        
+        x = self.conv(x.shape[1])(x)
         x = self.tconv(x.shape[1])(x, output_size=(previous_x.shape[2] * 2, previous_x.shape[3] * 2))
         x = nn.GroupNorm(x.shape[1], x.shape[1])(x)
-        
         return x    
 
 class ScoreNet2D(nn.Module):
@@ -141,11 +139,11 @@ class ScoreNet2D(nn.Module):
         self.n_channel = n_channel
         self.width = width
         self.height = height
-
+        self.channels = channels
         
         self.embed = GaussianFourierProjection()
         
-        self.down1 = DownSample(n_channel, channels[0])
+        
         self.down2 = DownSample(channels[0], channels[1])
 
         self.bottom = DownSample(channels[1], channels[2])
@@ -167,6 +165,9 @@ class ScoreNet2D(nn.Module):
         if type(x) == np.ndarray:
             x = convert_to_torch_tensor(x)
         x_embed = self.embed(x); pp(f"x_embed : {x_embed.shape}")
+
+        self.down1 = DownSample(x_embed.shape[1], self.channels[0])
+
         x_down1 = self.down1(x_embed); pp(f"x_down1 : {x_down1.size()}")
         x_down2 = self.down2(x_down1); pp(f"x_down2 : {x_down2.size()}")
 
@@ -176,7 +177,9 @@ class ScoreNet2D(nn.Module):
 
         x_up1 = self.up1(x_down2, x_bottom); pp(f"x_up1 : {x_up1.shape}")
         x_up2 = self.up2(x_down1, x_up1); pp(f"x_up2 : {x_up2.shape}")
-        x_act = self.act(x_up2); pp(f"x_act : {x_act.shape}")
+
+        x = nn.Conv2d(x_up2.shape[1], self.n_channel, kernel_size=1, stride=1, padding=0)(x_up2); pp(f"x : {x.shape}")
+        x_act = self.act(x); pp(f"x_act : {x_act.shape}")
 
         denominator = marginal_prob_std(t); pp(f"t : {t}"); pp(f"denominator : {denominator.size()}")
         
@@ -216,7 +219,7 @@ def unit_test():
     plt.show()
 
 
-unit_test()
+# unit_test()
 
 
 
