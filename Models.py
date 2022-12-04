@@ -168,26 +168,79 @@ class ScoreNet2D(nn.Module):
 
         self.down1 = DownSample(x_embed.shape[1], self.channels[0])
 
-        x_down1 = self.down1(x_embed); pp(f"x_down1 : {x_down1.size()}")
-        x_down2 = self.down2(x_down1); pp(f"x_down2 : {x_down2.size()}")
+        x_down1 = self.down1(x_embed) 
+        # pp(f"x_down1 : {x_down1.size()}")
+        x_down2 = self.down2(x_down1) 
+        # pp(f"x_down2 : {x_down2.size()}")
 
-        x_bottom = self.bottom(x_down2); pp(f"x_bottom : {x_bottom.size()}")
+        x_bottom = self.bottom(x_down2)
+        # pp(f"x_bottom : {x_bottom.size()}")
         x_bottom = nn.ConvTranspose2d(x_bottom.shape[1], x_bottom.shape[1], kernel_size=2, stride=2, padding=0)(x_bottom)
-        pp(f"x_bottom_conv : {x_bottom.size()}")
+        # pp(f"x_bottom_conv : {x_bottom.size()}")
 
         x_up1 = self.up1(x_down2, x_bottom); pp(f"x_up1 : {x_up1.shape}")
         x_up2 = self.up2(x_down1, x_up1); pp(f"x_up2 : {x_up2.shape}")
 
         x = nn.Conv2d(x_up2.shape[1], self.n_channel, kernel_size=1, stride=1, padding=0)(x_up2); pp(f"x : {x.shape}")
-        x_act = self.act(x); pp(f"x_act : {x_act.shape}")
+        x_act = self.act(x)
+        # pp(f"x_act : {x_act.shape}")
 
         denominator = marginal_prob_std(t); pp(f"t : {t}"); pp(f"denominator : {denominator.size()}")
         
         x = x_act / denominator[:, None, None, None]
-        pp(f"final x : {x.shape}")
+        # pp(f"final x : {x.shape}")
         
         return x 
 
+def sigma_func(t):
+    return ()
+
+class VE_SDE(nn.Module):
+    def __init__(self, x, num_steps = 100):
+        self.scoreNet = None
+        self.sigma = None
+        self.step = num_steps
+        self.drift_coef = self.drift_coef
+        self.diffusion_coef = 0
+        self.x = x
+        self.epsilons = torch.randn(self.step)
+
+    def sigma_func(self, t):
+        return t ** 2
+
+    def drift_func(self, t):        
+        return torch.sqrt(2 * t) * torch.randn(1)
+
+    def train_scorenet(self, x, n_batch, x_height, y_height):
+        self.scoreNet = ScoreNet2D(n_batch=n_batch, n_channel=1, width=x_height, height=y_height)
+        self.scoreNet.to(DEVICE)
+        print(self.scoreNet)
+        input = torch.randn(n_batch, 1, x_height, y_height).to(DEVICE)
+
+        loss = loss_fn(self.scoreNet, input, marginal_prob_std = marginal_prob_std)
+        optimizer = torch.optim.Adam(self.scoreNet.parameters(), lr = 1e-4)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    def predictor(self, x):
+        for t in range(self.step - 1, 0, -1):
+            sigma_diff = (self.sigma(t + 1)**2 - self.sigma(t)**2)
+            x_i_prime = x + sigma_diff * self.scoreNet(x , self.sigma(t + 1))
+            z = torch.randn(1) # 이거 평균이 0이고 표준편차가 1인 identity matrix인지 확인 필요
+            x = x_i_prime + torch.sqrt(sigma_diff) * z
+
+    def corrector(self, x):
+        for j in range(0, self.step, 1):
+            z = torch.randn(1)            
+            x = x + self.epsilons[j] * self.scoreNet(x, self.sigma_func(j)) + torch.sqrt(2 * self.epsilons[j]) * z
+
+    # 이게 아닌 것 같다. 일단 x를 step에 따라 다 저장을 해놔야 하는건가???   ---------  2022.12.04
+    
+    def forward(self, x):
+        x = self.predictor(x)
+        x = self.corrector(x)
 
 
 def unit_test():
@@ -220,7 +273,3 @@ def unit_test():
 
 
 # unit_test()
-
-
-
-
