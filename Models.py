@@ -195,7 +195,7 @@ class ScoreNet2D(nn.Module):
 def sigma_func(t):
     return ()
 
-class VE_SDE(nn.Module):
+class VE_SDE:
     def __init__(self, x, num_steps = 100):
         self.scoreNet = None
         self.sigma = None
@@ -208,16 +208,17 @@ class VE_SDE(nn.Module):
     def sigma_func(self, t):
         return t ** 2
 
-    def drift_func(self, t):        
+    def drift_func(self, t):
         return torch.sqrt(2 * t) * torch.randn(1)
 
     def train_scorenet(self, x, n_batch, x_height, y_height):
         self.scoreNet = ScoreNet2D(n_batch=n_batch, n_channel=1, width=x_height, height=y_height)
         self.scoreNet.to(DEVICE)
         print(self.scoreNet)
-        input = torch.randn(n_batch, 1, x_height, y_height).to(DEVICE)
+        if type(x) == np.ndarray:
+            x = convert_to_torch_tensor(x)
 
-        loss = loss_fn(self.scoreNet, input, marginal_prob_std = marginal_prob_std)
+        loss = loss_fn(self.scoreNet, x, marginal_prob_std = marginal_prob_std)
         optimizer = torch.optim.Adam(self.scoreNet.parameters(), lr = 1e-4)
 
         optimizer.zero_grad()
@@ -230,18 +231,18 @@ class VE_SDE(nn.Module):
             x_i_prime = x + sigma_diff * self.scoreNet(x , self.sigma(t + 1))
             z = torch.randn(1) # 이거 평균이 0이고 표준편차가 1인 identity matrix인지 확인 필요
             x = x_i_prime + torch.sqrt(sigma_diff) * z
-
+        return x
     def corrector(self, x):
         for j in range(0, self.step, 1):
             z = torch.randn(1)            
             x = x + self.epsilons[j] * self.scoreNet(x, self.sigma_func(j)) + torch.sqrt(2 * self.epsilons[j]) * z
-
+        return x
     # 이게 아닌 것 같다. 일단 x를 step에 따라 다 저장을 해놔야 하는건가???   ---------  2022.12.04
     
-    def forward(self, x):
+    def run_denoising(self, x):
         x = self.predictor(x)
         x = self.corrector(x)
-
+        return x
 
 def unit_test():
     import matplotlib.pylab as plt

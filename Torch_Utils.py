@@ -1,6 +1,7 @@
 import torch
 from Contant import DEVICE
 import numpy as np
+from torchvision import transforms
 
 def convert_to_torch_tensor(arr):
     return torch.from_numpy(arr).float().to(DEVICE)
@@ -12,6 +13,11 @@ def convert_torchtensor_to_conv2d_input(input):
     input = convert_to_torch_tensor(input)
     input.to(DEVICE)
     return input
+
+def resize_image(x):
+    transform = torch.nn.Sequential(transforms.CenterCrop((300, 300)), transforms.Resize((400, 400)))    
+    x = transform(x)
+    return x
 
 
 def get_magnitude(tensor):
