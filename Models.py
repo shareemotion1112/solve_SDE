@@ -22,7 +22,7 @@ class GaussianFourierProjection(nn.Module):
     x : [n_batch, n_channel, width, height]
     """    
     self.W = nn.Parameter(torch.randn(x.shape[2], x.shape[3]) * self.scale, requires_grad=False).to(DEVICE)
-    x_proj = torch.zeros(x.shape[0], x.shape[1] * 2, x.shape[2], x.shape[3])
+    x_proj = torch.zeros(x.shape[0], x.shape[1] * 2, x.shape[2], x.shape[3]).to(DEVICE)
     for i in range(x.shape[0]):
         for j in range(x.shape[1]):
             tmp = x[i, j, :, :] * self.W * 2 * np.pi
@@ -41,19 +41,9 @@ marginal_prob_std(399)
 
 
 def loss_fn(model, x, marginal_prob_std, eps=1e-5):
-    """The loss function for training score-based generative models.
-
-    Args:
-    model: A PyTorch model instance that represents a 
-        time-dependent score-based model.
-    x: A mini-batch of training data.    
-    marginal_prob_std: A function that gives the standard deviation of 
-        the perturbation kernel.
-    eps: A tolerance value for numerical stability.
-    """
-    random_t = torch.rand(x.shape[0], device=x.device) * (1. - eps) + eps  # 왜 random T를 사용? int 스텝을 넣는게 아니네??
+    random_t = torch.rand(x.shape[0], device=DEVICE) * (1. - eps) + eps
     # pp(x.size())
-    z = torch.randint(0, 255, x.size(), device=x.device)
+    z = torch.randint(0, 255, x.size(), device=DEVICE)
     std = marginal_prob_std(random_t)
     perturbed_x = x + z * std[:, None, None, None]
     score = model(perturbed_x, random_t)
@@ -96,11 +86,12 @@ ConvTranspose2d : https://cumulu-s.tistory.com/29
 class DownSample(nn.Module):
     def __init__(self, input_dim, output_dim):
         super(DownSample, self).__init__()
-        self.conv = nn.Conv2d(input_dim, output_dim, kernel_size=3, stride=1, padding=1)
-        self.gn = nn.GroupNorm(output_dim, output_dim)
-        self.relu = nn.ReLU()
-        self.pool = nn.MaxPool2d(kernel_size=2)
+        self.conv = nn.Conv2d(input_dim, output_dim, kernel_size=3, stride=1, padding=1).to(DEVICE)
+        self.gn = nn.GroupNorm(output_dim, output_dim).to(DEVICE)
+        self.relu = nn.ReLU().to(DEVICE)
+        self.pool = nn.MaxPool2d(kernel_size=2).to(DEVICE)
     def forward(self, x):
+        a = x.device
         x = self.conv(x)
         x = self.gn(x)
         x = self.relu(x)
@@ -117,10 +108,10 @@ class UpSample(nn.Module):
         self.gn = None
 
     def tconv(self, n_ch):
-        return nn.ConvTranspose2d(n_ch, n_ch, kernel_size=2, stride=2, padding=0)
+        return nn.ConvTranspose2d(n_ch, n_ch, kernel_size=2, stride=2, padding=0).to(DEVICE)
 
     def conv(self, n_ch):
-        return nn.Conv2d(n_ch, n_ch // 2, kernel_size=3, stride=1, padding=1)
+        return nn.Conv2d(n_ch, n_ch // 2, kernel_size=3, stride=1, padding=1).to(DEVICE)
         
     def forward(self, previous_x, x):
         x = self.conv(x.shape[1])(x)
@@ -128,7 +119,8 @@ class UpSample(nn.Module):
         x = torch.cat([previous_x, x], dim=1); pp(f"x : {x.shape}")        
         x = self.conv(x.shape[1])(x)
         x = self.tconv(x.shape[1])(x, output_size=(previous_x.shape[2] * 2, previous_x.shape[3] * 2))
-        x = nn.GroupNorm(x.shape[1], x.shape[1])(x)
+        groupNorm = nn.GroupNorm(x.shape[1], x.shape[1]).to(DEVICE)
+        x = groupNorm(x)
         return x    
 
 class ScoreNet2D(nn.Module):
@@ -170,13 +162,15 @@ class ScoreNet2D(nn.Module):
 
         x_bottom = self.bottom(x_down2)
         # pp(f"x_bottom : {x_bottom.size()}")
-        x_bottom = nn.ConvTranspose2d(x_bottom.shape[1], x_bottom.shape[1], kernel_size=2, stride=2, padding=0)(x_bottom)
+        btm = nn.ConvTranspose2d(x_bottom.shape[1], x_bottom.shape[1], kernel_size=2, stride=2, padding=0).to(DEVICE)
+        x_bottom = btm(x_bottom)
         # pp(f"x_bottom_conv : {x_bottom.size()}")
 
         x_up1 = self.up1(x_down2, x_bottom); pp(f"x_up1 : {x_up1.shape}")
         x_up2 = self.up2(x_down1, x_up1); pp(f"x_up2 : {x_up2.shape}")
-
-        x = nn.Conv2d(x_up2.shape[1], self.n_channel, kernel_size=1, stride=1, padding=0)(x_up2); pp(f"x : {x.shape}")
+        nnConv2d = nn.Conv2d(x_up2.shape[1], self.n_channel, kernel_size=1, stride=1, padding=0).to(DEVICE)
+        x = nnConv2d(x_up2)
+        pp(f"x : {x.shape}")
         x_act = self.act(x)
         # pp(f"x_act : {x_act.shape}")
 
@@ -215,25 +209,20 @@ class VE_SDE:
             t = t * TIME_STEP
             sigma_diff = (self.sigma_func(t + 1)**2 - self.sigma_func(t)**2)
             x_i_prime = x + sigma_diff * self.scoreNet(x, t)
-            z = torch.randn(1) # 이거 평균이 0이고 표준편차가 1인 identity matrix인지 확인 필요
+            z = torch.randn(1).to(DEVICE) # 이거 평균이 0이고 표준편차가 1인 identity matrix인지 확인 필요
             x = x_i_prime + torch.sqrt(sigma_diff) * z
         return x
     def corrector(self, x):
         for j in trange(0, self.step, 1):
             t = (j + 1) * TIME_STEP # t = 0이면 scoreNet 게산할때 에러남
-            z = torch.randn(1)
-
-            # b = self.scoreNet(x, t)
-            # c = torch.sqrt(torch.abs(2 * self.epsilons[j]))
-            # d = 2 * self.epsilons[j]
+            z = torch.randn(1).to(DEVICE)
 
             x = x + self.epsilons[j] * self.scoreNet(x, t) + torch.sqrt(torch.abs(2 * self.epsilons[j])) * z
 
             if torch.sum(torch.isnan(x)) > 0:
                 print(x)
         return x
-    # 이게 아닌 것 같다. 일단 x를 step에 따라 다 저장을 해놔야 하는건가???   ---------  2022.12.04
-    
+
     def run_denoising(self, x):
         x = self.predictor(x)
         x = self.corrector(x)
@@ -256,10 +245,12 @@ def unit_test_ve_sde():
     # test_dir = os.path.join(base_dir,'test1')
 
 
-    file_names = os.listdir(train_dir)[:1]
+    file_names = os.listdir(train_dir)[:100]
     data_loader = get_img_dataloader(train_dir, file_names, batch_size)
+    data_loader = data_loader
 
-    scoreNet = ScoreNet2D(batch_size, 1, 400, 400).to(DEVICE)
+    scoreNet = ScoreNet2D(batch_size, 1, 400, 400)
+    scoreNet = scoreNet.to(DEVICE)
     scoreNet_optimizer = torch.optim.Adam(scoreNet.parameters(), lr = 1e-4)
 
     for x, y in data_loader:
@@ -270,24 +261,22 @@ def unit_test_ve_sde():
 
     ve_model = VE_SDE(batch_size, 400, 400, scoreNet=scoreNet, num_steps = num_steps)
     for x, y in data_loader:
-        pp(y)
         denoising_x = ve_model.run_denoising(x)
         pp("denoising x : {denoising_x.shape}")
 
         predictor_x = ve_model.run_predictor_only(x)
 
-
-    plt.subplot(2, 2, 1)
-    plt.title('original')
-    plt.imshow(x[0, 0, :, :])
-    plt.subplot(2, 2, 2)
-    plt.title('predictor only')
-    plt.imshow(predictor_x[0, 0, :, :].detach().numpy())
-    plt.subplot(2, 2, 3)
-    plt.title('denoising')
-    plt.imshow(denoising_x[0, 0, :, :].detach().numpy())
-    plt.subplots_adjust(hspace=0.5)
-    plt.show()
+        plt.subplot(2, 2, 1)
+        plt.title('original')
+        plt.imshow(x[0, 0, :, :].cpu().detach().numpy())
+        plt.subplot(2, 2, 2)
+        plt.title('predictor only')
+        plt.imshow(predictor_x[0, 0, :, :].cpu().detach().numpy())
+        plt.subplot(2, 2, 3)
+        plt.title('denoising')
+        plt.imshow(denoising_x[0, 0, :, :].cpu().detach().numpy())
+        plt.subplots_adjust(hspace=0.5)
+        plt.show()
     
 
 def unit_test_scorenet():

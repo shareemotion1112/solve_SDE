@@ -2,7 +2,7 @@ from torch.utils.data import DataLoader, Dataset
 import torch
 from torchvision import transforms
 import os
-from PIL import Image
+from Contant import DEVICE
 from torchvision.io import read_image
 
 class ImageDataset(Dataset):
@@ -22,7 +22,7 @@ class ImageDataset(Dataset):
         if self.transform:
             image = self.transform(image)
         label = filename.split('.')[0]
-        res_img = image
+        res_img = image.to(DEVICE)
         return res_img, label
 
 def get_img_dataloader(dir, filenames, n_batch):
