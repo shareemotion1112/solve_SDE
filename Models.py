@@ -5,6 +5,10 @@ from Contant import DEVICE
 import numpy as np
 from cPrint import pp
 from Torch_Utils import convert_to_torch_tensor
+from tqdm import trange
+
+SIGMA = torch.tensor(0.05)
+TIME_STEP = 0.01
 
 
 class GaussianFourierProjection(nn.Module):
@@ -26,18 +30,14 @@ class GaussianFourierProjection(nn.Module):
             x_proj[i, j:(j+2), :, :] = m_cat
     return x_proj
 
-def marginal_prob_std(t, sigma = 25):
-    """Compute the mean and standard deviation of $p_{0t}(x(t) | x(0))$.
-
-    Args:    
-    t: A vector of time steps.
-    sigma: The $\sigma$ in our SDE.  
-
-    Returns:
-    The standard deviation.
-    """    
+def marginal_prob_std(t, sigma = SIGMA):
+    if type(t) != torch.TensorType:
+        t = torch.tensor(t)
     t = t.clone()
-    return torch.sqrt((sigma**(2 * t) - 1.) / 2. / np.log(sigma))
+    result = torch.sqrt((sigma**(2 * t) - 1.) / 2. / torch.log(sigma))
+    return result
+
+marginal_prob_std(399)
 
 
 def loss_fn(model, x, marginal_prob_std, eps=1e-5):
@@ -142,26 +142,21 @@ class ScoreNet2D(nn.Module):
         self.channels = channels
         
         self.embed = GaussianFourierProjection()
-        
-        
-        self.down2 = DownSample(channels[0], channels[1])
 
+        self.down2 = DownSample(channels[0], channels[1])
         self.bottom = DownSample(channels[1], channels[2])
 
         self.up1 = UpSample()
         self.up2 = UpSample()
 
-
-
         self.dense1_input_size = 1        
         self.dense1 = nn.Linear(self.dense1_input_size, n_batch * n_channel * width * height)
-
 
         self.act = lambda x: x * torch.sigmoid(x)
         self.marginal_prob_std = marginal_prob_std
 
 
-    def forward(self, x, t): # t는 배치숫자와 동일해야함
+    def forward(self, x, t): # t는 loss_fn에 정의된 random_t가 들어감
         if type(x) == np.ndarray:
             x = convert_to_torch_tensor(x)
         x_embed = self.embed(x); pp(f"x_embed : {x_embed.shape}")
@@ -185,57 +180,57 @@ class ScoreNet2D(nn.Module):
         x_act = self.act(x)
         # pp(f"x_act : {x_act.shape}")
 
-        denominator = marginal_prob_std(t); pp(f"t : {t}"); pp(f"denominator : {denominator.size()}")
+        denominator = marginal_prob_std(t)
+        pp(f"t : {t}")
+        pp(f"denominator : {denominator}")
+        # pp(f"denominator : {denominator.shape}")
+        pp(f"x_act : {x_act.shape}")
         
-        x = x_act / denominator[:, None, None, None]
+        # x = x_act / denominator[:, None, None, None]
+        x = x_act / denominator
         # pp(f"final x : {x.shape}")
         
         return x 
 
-def sigma_func(t):
-    return ()
 
 class VE_SDE:
-    def __init__(self, x, num_steps = 100):
-        self.scoreNet = None
-        self.sigma = None
+    def __init__(self, n_batch, width, height, num_steps = 100, scoreNet = None):
+        self.scoreNet = scoreNet
         self.step = num_steps
-        self.drift_coef = self.drift_coef
+        self.drift_coef = self.drift_func
         self.diffusion_coef = 0
-        self.x = x
+        self.n_batch = n_batch
+        self.width = width
+        self.height = height
         self.epsilons = torch.randn(self.step)
 
     def sigma_func(self, t):
-        return t ** 2
+        return torch.tensor(t ** 2)
 
     def drift_func(self, t):
         return torch.sqrt(2 * t) * torch.randn(1)
 
-    def train_scorenet(self, x, n_batch, x_height, y_height):
-        self.scoreNet = ScoreNet2D(n_batch=n_batch, n_channel=1, width=x_height, height=y_height)
-        self.scoreNet.to(DEVICE)
-        print(self.scoreNet)
-        if type(x) == np.ndarray:
-            x = convert_to_torch_tensor(x)
-
-        loss = loss_fn(self.scoreNet, x, marginal_prob_std = marginal_prob_std)
-        optimizer = torch.optim.Adam(self.scoreNet.parameters(), lr = 1e-4)
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
     def predictor(self, x):
-        for t in range(self.step - 1, 0, -1):
-            sigma_diff = (self.sigma(t + 1)**2 - self.sigma(t)**2)
-            x_i_prime = x + sigma_diff * self.scoreNet(x , self.sigma(t + 1))
+        for t in trange(self.step - 1, 0, -1):
+            t = t * TIME_STEP
+            sigma_diff = (self.sigma_func(t + 1)**2 - self.sigma_func(t)**2)
+            x_i_prime = x + sigma_diff * self.scoreNet(x, t)
             z = torch.randn(1) # 이거 평균이 0이고 표준편차가 1인 identity matrix인지 확인 필요
             x = x_i_prime + torch.sqrt(sigma_diff) * z
         return x
     def corrector(self, x):
-        for j in range(0, self.step, 1):
-            z = torch.randn(1)            
-            x = x + self.epsilons[j] * self.scoreNet(x, self.sigma_func(j)) + torch.sqrt(2 * self.epsilons[j]) * z
+        for j in trange(0, self.step, 1):
+            t = (j + 1) * TIME_STEP # t = 0이면 scoreNet 게산할때 에러남
+            z = torch.randn(1)
+
+            # b = self.scoreNet(x, t)
+            # c = torch.sqrt(torch.abs(2 * self.epsilons[j]))
+            # d = 2 * self.epsilons[j]
+
+            x = x + self.epsilons[j] * self.scoreNet(x, t) + torch.sqrt(torch.abs(2 * self.epsilons[j])) * z
+
+            if torch.sum(torch.isnan(x)) > 0:
+                print(x)
         return x
     # 이게 아닌 것 같다. 일단 x를 step에 따라 다 저장을 해놔야 하는건가???   ---------  2022.12.04
     
@@ -244,14 +239,65 @@ class VE_SDE:
         x = self.corrector(x)
         return x
 
-def unit_test():
+    def run_predictor_only(self, x):
+        return self.predictor(x)
+
+
+def unit_test_ve_sde():
+    import os
+    from ImageHandle import get_img_dataloader
+    import matplotlib.pylab as plt
+
+    base_dir = "/Users/shareemotion/Projects/Solve_SDE/Data"
+    batch_size = 1
+    num_steps = 300
+    # n_channel = 1
+    train_dir = os.path.join(base_dir,'train')
+    # test_dir = os.path.join(base_dir,'test1')
+
+
+    file_names = os.listdir(train_dir)[:1]
+    data_loader = get_img_dataloader(train_dir, file_names, batch_size)
+
+    scoreNet = ScoreNet2D(batch_size, 1, 400, 400).to(DEVICE)
+    scoreNet_optimizer = torch.optim.Adam(scoreNet.parameters(), lr = 1e-4)
+
+    for x, y in data_loader:
+        scoreNet_loss = loss_fn(scoreNet, x, marginal_prob_std = marginal_prob_std)
+        scoreNet_optimizer.zero_grad()
+        scoreNet_loss.backward()
+        scoreNet_optimizer.step()
+
+    ve_model = VE_SDE(batch_size, 400, 400, scoreNet=scoreNet, num_steps = num_steps)
+    for x, y in data_loader:
+        pp(y)
+        denoising_x = ve_model.run_denoising(x)
+        pp("denoising x : {denoising_x.shape}")
+
+        predictor_x = ve_model.run_predictor_only(x)
+
+
+    plt.subplot(2, 2, 1)
+    plt.title('original')
+    plt.imshow(x[0, 0, :, :])
+    plt.subplot(2, 2, 2)
+    plt.title('predictor only')
+    plt.imshow(predictor_x[0, 0, :, :].detach().numpy())
+    plt.subplot(2, 2, 3)
+    plt.title('denoising')
+    plt.imshow(denoising_x[0, 0, :, :].detach().numpy())
+    plt.subplots_adjust(hspace=0.5)
+    plt.show()
+    
+
+def unit_test_scorenet():
     import matplotlib.pylab as plt
     x_height = 400
     y_height = 400
     n_batch = 10
     scoreNet = ScoreNet2D(n_batch=n_batch, n_channel=1, width=x_height, height=y_height)
     scoreNet.to(DEVICE)
-    print(scoreNet)
+    # print(scoreNet)
     input = torch.randn(n_batch, 1, x_height, y_height).to(DEVICE)
 
     
@@ -273,4 +319,5 @@ def unit_test():
     plt.show()
 
 
+unit_test_ve_sde()
 # unit_test()

@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import trange
 from torchvision import transforms
 from torchvision.io import read_image
+from ImageHandle import ImageDataset
 
 # data download : https://www.kaggle.com/c/dogs-vs-cats/data
 
@@ -28,34 +29,8 @@ im_arr = np.array(img)[:, :, 0]
 im_arr.shape
 
 
-
-
-class MyImageDataset(Dataset):
-    def __init__(self, img_dir, file_names, transform=None):
-        self.file_names = file_names
-        self.img_dir = img_dir
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.file_names)
-
-    def __getitem__(self, idx):
-        filename = self.file_names[idx]
-        img_path = os.path.join(self.img_dir, filename)
-        image = read_image(img_path)
-        if self.transform:
-            image = self.transform(image)
-        label = filename.split('.')[0]        
-        return image[0, :, :], label
-
-row = 2
-col = 4
-t_limit = row * col
-new_im = copy.copy(im_arr)
-
-
 transform = torch.nn.Sequential(transforms.CenterCrop((300, 300)), transforms.Resize((400, 400)))
-train_dataset = MyImageDataset(train_dir, file_names[:100], transform=transform)
+train_dataset = ImageDataset(train_dir, file_names[:100], transform=transform)
 train_dataloader = DataLoader(train_dataset, batch_size=batch_size)
 
 
