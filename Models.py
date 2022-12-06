@@ -236,28 +236,30 @@ def train_scoreNet(data_loader, batch_size, width, height):
     scoreNet = scoreNet.to(DEVICE)
     scoreNet_optimizer = torch.optim.Adam(scoreNet.parameters(), lr = 1e-4)
 
+    epochs = 100
+
     for x, y in data_loader:
-        scoreNet_loss = loss_fn(scoreNet, x, marginal_prob_std = marginal_prob_std)
-        scoreNet_optimizer.zero_grad()
-        scoreNet_loss.backward()
-        scoreNet_optimizer.step()
+        for i in trange(epochs):
+            scoreNet_loss = loss_fn(scoreNet, x, marginal_prob_std = marginal_prob_std)
+            scoreNet_optimizer.zero_grad()
+            scoreNet_loss.backward()
+            scoreNet_optimizer.step()
     return scoreNet
 
 
 def unit_test_ve_sde():
     import os
     from ImageHandle import get_img_dataloader
-    import matplotlib.pylab as plt
 
     base_dir = "/Users/shareemotion/Projects/Solve_SDE/Data"
     batch_size = 1
-    num_steps = 300
+    num_steps = 500
     # n_channel = 1
     train_dir = os.path.join(base_dir,'train')
     # test_dir = os.path.join(base_dir,'test1')
 
 
-    file_names = os.listdir(train_dir)[:100]
+    file_names = os.listdir(train_dir)[:1]
     data_loader = get_img_dataloader(train_dir, file_names, batch_size)
     data_loader = data_loader
 
@@ -270,7 +272,7 @@ def unit_test_ve_sde():
 
         predictor_x = ve_model.run_predictor_only(x)
 
-        plot(x, predictor_x, denoising_x)
+        plot(x, scoreNet(x, 1), predictor_x, denoising_x)
     
 
 def unit_test_scorenet():
@@ -303,4 +305,4 @@ def unit_test_scorenet():
 
 
 unit_test_ve_sde()
-# unit_test()
+# unit_test_scorenet()

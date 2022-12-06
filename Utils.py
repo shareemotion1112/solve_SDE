@@ -28,7 +28,7 @@ def plot(*args):
     import matplotlib.pylab as plt
     num_plots = len(args)
     for i, arg in enumerate(args):
-        plt.subplot(num_plots, 1, i + 1)
+        plt.subplot(1, num_plots, i + 1)
         plt.imshow(arg[0, 0, :, :].cpu().detach().numpy())
     plt.subplots_adjust(hspace=0.5)
     plt.show()
