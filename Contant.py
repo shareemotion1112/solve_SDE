@@ -7,5 +7,5 @@ import platform
 #     DEVICE = torch.device('mps')
 # else:
 #     DEVICE = torch.device('cuda:0')
-# DEVICE = torch.device('cpu')
-DEVICE = torch.device('mps')
+DEVICE = torch.device('cpu')
+# DEVICE = torch.device('mps')

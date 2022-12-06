@@ -5,7 +5,7 @@ import copy
 import matplotlib.pylab as plt
 from functions import weight_function
 from Models import ScoreNet2D
-from Torch_Utils import *
+from Utils import *
 
 # data download : https://www.kaggle.com/c/dogs-vs-cats/data
 

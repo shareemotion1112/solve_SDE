@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from Contant import DEVICE
 import numpy as np
 from cPrint import pp
-from Torch_Utils import convert_to_torch_tensor
+from Utils import convert_to_torch_tensor, plot
 from tqdm import trange
 
 SIGMA = torch.tensor(0.05)
@@ -231,6 +231,18 @@ class VE_SDE:
     def run_predictor_only(self, x):
         return self.predictor(x)
 
+def train_scoreNet(data_loader, batch_size, width, height):
+    scoreNet = ScoreNet2D(batch_size, 1, width, height)
+    scoreNet = scoreNet.to(DEVICE)
+    scoreNet_optimizer = torch.optim.Adam(scoreNet.parameters(), lr = 1e-4)
+
+    for x, y in data_loader:
+        scoreNet_loss = loss_fn(scoreNet, x, marginal_prob_std = marginal_prob_std)
+        scoreNet_optimizer.zero_grad()
+        scoreNet_loss.backward()
+        scoreNet_optimizer.step()
+    return scoreNet
+
 
 def unit_test_ve_sde():
     import os
@@ -249,15 +261,7 @@ def unit_test_ve_sde():
     data_loader = get_img_dataloader(train_dir, file_names, batch_size)
     data_loader = data_loader
 
-    scoreNet = ScoreNet2D(batch_size, 1, 400, 400)
-    scoreNet = scoreNet.to(DEVICE)
-    scoreNet_optimizer = torch.optim.Adam(scoreNet.parameters(), lr = 1e-4)
-
-    for x, y in data_loader:
-        scoreNet_loss = loss_fn(scoreNet, x, marginal_prob_std = marginal_prob_std)
-        scoreNet_optimizer.zero_grad()
-        scoreNet_loss.backward()
-        scoreNet_optimizer.step()
+    scoreNet = train_scoreNet(data_loader, batch_size, 400, 400)
 
     ve_model = VE_SDE(batch_size, 400, 400, scoreNet=scoreNet, num_steps = num_steps)
     for x, y in data_loader:
@@ -266,17 +270,7 @@ def unit_test_ve_sde():
 
         predictor_x = ve_model.run_predictor_only(x)
 
-        plt.subplot(2, 2, 1)
-        plt.title('original')
-        plt.imshow(x[0, 0, :, :].cpu().detach().numpy())
-        plt.subplot(2, 2, 2)
-        plt.title('predictor only')
-        plt.imshow(predictor_x[0, 0, :, :].cpu().detach().numpy())
-        plt.subplot(2, 2, 3)
-        plt.title('denoising')
-        plt.imshow(denoising_x[0, 0, :, :].cpu().detach().numpy())
-        plt.subplots_adjust(hspace=0.5)
-        plt.show()
+        plot(x, predictor_x, denoising_x)
     
 
 def unit_test_scorenet():

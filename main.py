@@ -3,7 +3,7 @@ import os
 import numpy as np
 import copy
 from Models import ScoreNet2D, loss_fn, marginal_prob_std
-from Torch_Utils import *
+from Utils import *
 from torch.utils.data import DataLoader, Dataset
 from tqdm import trange
 from torchvision import transforms
