@@ -20,7 +20,7 @@ class GaussianFourierProjection(nn.Module):
   def forward(self, x):
     """
     x : [n_batch, n_channel, width, height]
-    """    
+    """        
     self.W = nn.Parameter(torch.randn(x.shape[2], x.shape[3]) * self.scale, requires_grad=False).to(DEVICE)
     x_proj = torch.zeros(x.shape[0], x.shape[1] * 2, x.shape[2], x.shape[3]).to(DEVICE)
     for i in range(x.shape[0]):
@@ -53,20 +53,6 @@ def loss_fn(model, x, marginal_prob_std, eps=1e-5):
     loss = torch.mean(torch.sum((score * std[:, None, None, None] + z)**2, dim=(1,2,3)))
     return loss
 
-class NeuralNet(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super(NeuralNet, self).__init__()
-        self.fc1 = nn.Linear(input_dim, 256, device=DEVICE)
-        self.fc2 = nn.Linear(256, 128, device=DEVICE)
-        self.fc3 = nn.Linear(128, 64, device=DEVICE)
-        self.fc4 = nn.Linear(64, output_dim, device=DEVICE)
-
-    def forward(self, x):
-        x = nn.BatchNorm1d(self.fc1(x))
-        x = nn.BatchNorm1d(self.fc2(x))
-        x = nn.BatchNorm1d(self.fc3(x))
-        x = F.relu(self.fc4(x))
-        return x
 
 """
 ScoreNet: input의 ㅣog probability를 학습하는 녀석
@@ -156,15 +142,15 @@ class ScoreNet2D(nn.Module):
         self.down1 = DownSample(x_embed.shape[1], self.channels[0])
 
         x_down1 = self.down1(x_embed) 
-        # pp(f"x_down1 : {x_down1.size()}")
+        pp(f"x_down1 : {x_down1.size()}")
         x_down2 = self.down2(x_down1) 
-        # pp(f"x_down2 : {x_down2.size()}")
+        pp(f"x_down2 : {x_down2.size()}")
 
         x_bottom = self.bottom(x_down2)
-        # pp(f"x_bottom : {x_bottom.size()}")
+        pp(f"x_bottom : {x_bottom.size()}")
         btm = nn.ConvTranspose2d(x_bottom.shape[1], x_bottom.shape[1], kernel_size=2, stride=2, padding=0).to(DEVICE)
         x_bottom = btm(x_bottom)
-        # pp(f"x_bottom_conv : {x_bottom.size()}")
+        pp(f"x_bottom_conv : {x_bottom.size()}")
 
         x_up1 = self.up1(x_down2, x_bottom); pp(f"x_up1 : {x_up1.shape}")
         x_up2 = self.up2(x_down1, x_up1); pp(f"x_up2 : {x_up2.shape}")
@@ -172,7 +158,7 @@ class ScoreNet2D(nn.Module):
         x = nnConv2d(x_up2)
         pp(f"x : {x.shape}")
         x_act = self.act(x)
-        # pp(f"x_act : {x_act.shape}")
+        pp(f"x_act : {x_act.shape}")
 
         denominator = marginal_prob_std(t)
         pp(f"t : {t}")
@@ -239,6 +225,7 @@ def train_scoreNet(data_loader, batch_size, width, height):
     epochs = 100
 
     for x, y in data_loader:
+        x = x.to(DEVICE)
         for i in trange(epochs):
             scoreNet_loss = loss_fn(scoreNet, x, marginal_prob_std = marginal_prob_std)
             scoreNet_optimizer.zero_grad()
@@ -253,7 +240,7 @@ def unit_test_ve_sde():
 
     base_dir = "/Users/shareemotion/Projects/Solve_SDE/Data"
     batch_size = 1
-    num_steps = 500
+    num_steps = 50 # 너무 노이즈를 많이 넣어도 학습이 안될 듯
     # n_channel = 1
     train_dir = os.path.join(base_dir,'train')
     # test_dir = os.path.join(base_dir,'test1')
@@ -261,8 +248,6 @@ def unit_test_ve_sde():
 
     file_names = os.listdir(train_dir)[:1]
     data_loader = get_img_dataloader(train_dir, file_names, batch_size)
-    data_loader = data_loader
-
     scoreNet = train_scoreNet(data_loader, batch_size, 400, 400)
 
     ve_model = VE_SDE(batch_size, 400, 400, scoreNet=scoreNet, num_steps = num_steps)
@@ -275,34 +260,27 @@ def unit_test_ve_sde():
         plot(x, scoreNet(x, 1), predictor_x, denoising_x)
     
 
-def unit_test_scorenet():
-    import matplotlib.pylab as plt
-    x_height = 400
-    y_height = 400
-    n_batch = 10
-    scoreNet = ScoreNet2D(n_batch=n_batch, n_channel=1, width=x_height, height=y_height)
-    scoreNet.to(DEVICE)
-    # print(scoreNet)
-    input = torch.randn(n_batch, 1, x_height, y_height).to(DEVICE)
+def unit_test_scorenet():    
+    from torch.utils.data import DataLoader
+    import torchvision.transforms as transforms
+    from torchvision.datasets import MNIST
 
-    
-    loss = loss_fn(scoreNet, input, marginal_prob_std = marginal_prob_std)
-    optimizer = torch.optim.Adam(scoreNet.parameters(), lr = 1e-4)
+    batch_size = 1
 
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
+    dataset = MNIST('.', train=True, transform=transforms.ToTensor(), download=True)
+    resize_img = transforms.Resize((400, 400))
+    dataset_resize = []
+    for x, y in dataset:
+        x = resize_img(x)
+        dataset_resize.append([x, y])
+    data_loader = DataLoader(dataset_resize[:5], batch_size=batch_size, shuffle=True)
+    scoreNet = train_scoreNet(data_loader, batch_size, 400, 400)
 
-    eps = 1e-5
-    t = torch.rand(input.shape[0], device=DEVICE) * (1. - eps) + eps  # 왜 random T를 사용? int 스텝을 넣는게 아니네??
-    y = scoreNet(input, t)
-    yy = y[0, 0, :, :].detach().numpy()
-    plt.subplot(2, 1, 1)
-    plt.imshow(input[0, 0, :, :])
-    plt.subplot(2, 1, 2)
-    plt.imshow(yy)
-    plt.show()
+    random_t = torch.rand(x.shape[0], device=DEVICE)
+    score = scoreNet(x[None, :, :, :], random_t)
+    plot(score)
 
 
-unit_test_ve_sde()
-# unit_test_scorenet()
+
+# unit_test_ve_sde()
+unit_test_scorenet()

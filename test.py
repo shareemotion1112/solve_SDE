@@ -11,64 +11,6 @@ import matplotlib.pylab as plt
 
 
 
-
-
-""" test code """
-
-# With Learnable Parameters
-m = nn.BatchNorm2d(100)
-# Without Learnable Parameters
-# m = nn.BatchNorm2d(100, affine=False)
-input = torch.randn(20, 100, 35, 45)
-output = m(input)
-print(output.shape)
-
-embed_dim = 256; scale = 30
-torch.randn(embed_dim // 2)
-W = nn.Parameter(torch.randn(embed_dim // 2) * scale, requires_grad=False)
-x = torch.from_numpy(np.ones((100, 128)))
-x_proj = x[:, None] * W[None, :] * 2 * np.pi
-print(x_proj.shape)
-
-# gaussian perturbation?
-import random
-n_tot = 1000
-x = [i / 100 for i in range(n_tot)]
-sigma = 0.1
-t = random.random()
-
-def lam(t, sigma):
-  return 1 / (2 * np.exp(sigma)) * ( sigma ** (2*t) - 1)
-
-y = lam(t, sigma)
-
-ts = [random.random() for i in range(n_tot)]
-ys = []
-for t in ts:
-  ys.append(lam(t, sigma))
-
-ys = np.round(ys, 3)
-unique, counts = np.unique(ys, return_counts=True)
-
-import matplotlib.pyplot as plt
-# plt.plot(x, ys, 'o'); plt.show()
-# plt.plot(ys, 'o'); plt.show();
-plt.plot(unique, counts, 'o');plt.show();
-
-gfp_fn = GaussianFourierProjection(embed_dim=256)
-
-x_gfp = gfp_fn(x)
-print(f"x_gfp : {x_gfp.shape}")
-
-import matplotlib.pylab as plt
-
-plt.subplot(2, 1, 1)
-plt.plot(x)
-plt.subplot(2, 1, 2)
-plt.plot(x_gfp[:, 0, :])
-plt.show()
-""""""
-
 class GaussianFourierProjection(nn.Module):
   """Gaussian random features for encoding time steps."""  
   def __init__(self, embed_dim, scale=30.):
