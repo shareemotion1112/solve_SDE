@@ -37,8 +37,6 @@ def marginal_prob_std(t, sigma = SIGMA):
     result = torch.sqrt((sigma**(2 * t) - 1.) / 2. / torch.log(sigma))
     return result
 
-marginal_prob_std(399)
-
 
 def loss_fn(model, x, marginal_prob_std, eps=1e-5):
     random_t = torch.rand(x.shape[0], device=DEVICE) * (1. - eps) + eps
@@ -174,15 +172,16 @@ class ScoreNet2D(nn.Module):
 
 
 class VE_SDE:
-    def __init__(self, n_batch, width, height, num_steps = 100, scoreNet = None):
+    def __init__(self, n_batch, width, height, predictor_steps = 100, corrector_steps = 10, scoreNet = None):
         self.scoreNet = scoreNet
-        self.step = num_steps
+        self.predictor_steps = predictor_steps
+        self.corrector_steps = corrector_steps
         self.drift_coef = self.drift_func
         self.diffusion_coef = 0
         self.n_batch = n_batch
         self.width = width
         self.height = height
-        self.epsilons = torch.randn(self.step)
+        self.epsilons = torch.randn(self.corrector_steps)
 
     def sigma_func(self, t):
         return torch.tensor(t ** 2)
@@ -191,15 +190,15 @@ class VE_SDE:
         return torch.sqrt(2 * t) * torch.randn(1)
 
     def predictor(self, x):
-        for t in trange(self.step - 1, 0, -1):
+        for t in trange(self.predictor_steps - 1, 0, -1):
             t = t * TIME_STEP
             sigma_diff = (self.sigma_func(t + 1)**2 - self.sigma_func(t)**2)
             x_i_prime = x + sigma_diff * self.scoreNet(x, t)
-            z = torch.randn(1).to(DEVICE) # 이거 평균이 0이고 표준편차가 1인 identity matrix인지 확인 필요
+            z = torch.randn(1).to(DEVICE) # 이거 평균이 0이고 표준편차가 1인 identity matrix인지 확인 필요 : checked!
             x = x_i_prime + torch.sqrt(sigma_diff) * z
         return x
     def corrector(self, x):
-        for j in trange(0, self.step, 1):
+        for j in trange(0, self.corrector_steps, 1):
             t = (j + 1) * TIME_STEP # t = 0이면 scoreNet 게산할때 에러남
             z = torch.randn(1).to(DEVICE)
 
@@ -237,27 +236,41 @@ def train_scoreNet(data_loader, batch_size, width, height):
 def unit_test_ve_sde():
     import os
     from ImageHandle import get_img_dataloader
+    from torch.utils.data import DataLoader
+    import torchvision.transforms as transforms
+    from torchvision.datasets import MNIST
 
     base_dir = "/Users/shareemotion/Projects/Solve_SDE/Data"
     batch_size = 1
-    num_steps = 50 # 너무 노이즈를 많이 넣어도 학습이 안될 듯
+    predictor_steps = 50 # 너무 노이즈를 많이 넣어도 학습이 안될 듯
+    corrector_steps = 50
     # n_channel = 1
     train_dir = os.path.join(base_dir,'train')
     # test_dir = os.path.join(base_dir,'test1')
 
 
-    file_names = os.listdir(train_dir)[:1]
-    data_loader = get_img_dataloader(train_dir, file_names, batch_size)
+    # file_names = os.listdir(train_dir)[:1]
+    # data_loader = get_img_dataloader(train_dir, file_names, batch_size)
+    # scoreNet = train_scoreNet(data_loader, batch_size, 400, 400)
+
+
+    dataset = MNIST('.', train=True, transform=transforms.ToTensor(), download=True)
+    resize_img = transforms.Resize((400, 400))
+    dataset_resize = []
+    for x, y in dataset:
+        x = resize_img(x)
+        dataset_resize.append([x, y])
+    data_loader = DataLoader(dataset_resize[:5], batch_size=batch_size, shuffle=True)
     scoreNet = train_scoreNet(data_loader, batch_size, 400, 400)
 
-    ve_model = VE_SDE(batch_size, 400, 400, scoreNet=scoreNet, num_steps = num_steps)
+    ve_model = VE_SDE(batch_size, 400, 400, scoreNet=scoreNet, predictor_steps = predictor_steps, corrector_steps=corrector_steps)
     for x, y in data_loader:
         denoising_x = ve_model.run_denoising(x)
         pp("denoising x : {denoising_x.shape}")
+        plot(x, scoreNet(x, 1), denoising_x)
 
-        predictor_x = ve_model.run_predictor_only(x)
-
-        plot(x, scoreNet(x, 1), predictor_x, denoising_x)
+        # predictor_x = ve_model.run_predictor_only(x)
+        # plot(x, scoreNet(x, 1), predictor_x, denoising_x)
     
 
 def unit_test_scorenet():    
@@ -283,4 +296,4 @@ def unit_test_scorenet():
 
 
 # unit_test_ve_sde()
-unit_test_scorenet()
+# unit_test_scorenet()
