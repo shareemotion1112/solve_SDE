@@ -1,4 +1,4 @@
-import torch
+import torch, gc
 import torch.nn as nn
 import torch.nn.functional as F
 from Contant import DEVICE
@@ -21,6 +21,7 @@ class GaussianFourierProjection(nn.Module):
     """
     x : [n_batch, n_channel, width, height]
     """        
+    x = x.to(DEVICE)
     self.W = nn.Parameter(torch.randn(x.shape[2], x.shape[3]) * self.scale, requires_grad=False).to(DEVICE)
     x_proj = torch.zeros(x.shape[0], x.shape[1] * 2, x.shape[2], x.shape[3]).to(DEVICE)
     for i in range(x.shape[0]):
@@ -190,12 +191,15 @@ class VE_SDE:
         return torch.sqrt(2 * t) * torch.randn(1)
 
     def predictor(self, x):
+        x = x.to(DEVICE)
         for t in trange(self.predictor_steps - 1, 0, -1):
             t = t * TIME_STEP
             sigma_diff = (self.sigma_func(t + 1)**2 - self.sigma_func(t)**2)
+            sigma_diff = sigma_diff.to(DEVICE)
             x_i_prime = x + sigma_diff * self.scoreNet(x, t)
             z = torch.randn(1).to(DEVICE) # 이거 평균이 0이고 표준편차가 1인 identity matrix인지 확인 필요 : checked!
             x = x_i_prime + torch.sqrt(sigma_diff) * z
+            gc.collect()
         return x
     def corrector(self, x):
         for j in trange(0, self.corrector_steps, 1):
@@ -206,6 +210,7 @@ class VE_SDE:
 
             if torch.sum(torch.isnan(x)) > 0:
                 print(x)
+            
         return x
 
     def run_denoising(self, x):
@@ -221,11 +226,11 @@ def train_scoreNet(data_loader, batch_size, width, height):
     scoreNet = scoreNet.to(DEVICE)
     scoreNet_optimizer = torch.optim.Adam(scoreNet.parameters(), lr = 1e-4)
 
-    epochs = 100
-
+    epochs = 20
     for x, y in data_loader:
+        print('|', end="")
         x = x.to(DEVICE)
-        for i in trange(epochs):
+        for i in range(epochs):
             scoreNet_loss = loss_fn(scoreNet, x, marginal_prob_std = marginal_prob_std)
             scoreNet_optimizer.zero_grad()
             scoreNet_loss.backward()
@@ -245,7 +250,7 @@ def unit_test_ve_sde():
     predictor_steps = 50 # 너무 노이즈를 많이 넣어도 학습이 안될 듯
     corrector_steps = 50
     # n_channel = 1
-    train_dir = os.path.join(base_dir,'train')
+    # train_dir = os.path.join(base_dir,'train')
     # test_dir = os.path.join(base_dir,'test1')
 
 
@@ -254,23 +259,29 @@ def unit_test_ve_sde():
     # scoreNet = train_scoreNet(data_loader, batch_size, 400, 400)
 
 
-    dataset = MNIST('.', train=True, transform=transforms.ToTensor(), download=True)
+    dataset = MNIST('.', train=True, transform=transforms.ToTensor(), download=True)    
     resize_img = transforms.Resize((400, 400))
     dataset_resize = []
+    cnt = 0
     for x, y in dataset:
+        cnt += 1
+        if cnt > 200:
+            break
         x = resize_img(x)
         dataset_resize.append([x, y])
-    data_loader = DataLoader(dataset_resize[:5], batch_size=batch_size, shuffle=True)
+    data_loader = DataLoader(dataset_resize[:200], batch_size=batch_size, shuffle=True)
     scoreNet = train_scoreNet(data_loader, batch_size, 400, 400)
 
     ve_model = VE_SDE(batch_size, 400, 400, scoreNet=scoreNet, predictor_steps = predictor_steps, corrector_steps=corrector_steps)
-    for x, y in data_loader:
-        denoising_x = ve_model.run_denoising(x)
-        pp("denoising x : {denoising_x.shape}")
-        plot(x, scoreNet(x, 1), denoising_x)
 
-        # predictor_x = ve_model.run_predictor_only(x)
-        # plot(x, scoreNet(x, 1), predictor_x, denoising_x)
+    with torch.no_grad():
+        for x, y in data_loader:
+            denoising_x = ve_model.run_denoising(x)
+            pp("denoising x : {denoising_x.shape}")
+            plot(x, scoreNet(x, 1), denoising_x)
+
+            # predictor_x = ve_model.run_predictor_only(x)
+            # plot(x, scoreNet(x, 1), predictor_x, denoising_x)
     
 
 def unit_test_scorenet():    
