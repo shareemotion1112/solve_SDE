@@ -25,7 +25,7 @@ def get_optimizer(net, learning_rate=1e-4):
 
 
 def plot(*args):
-    import matplotlib.pylab as plt
+    import matplotlib.pyplot as plt
     num_plots = len(args)
     for i, arg in enumerate(args):
         plt.subplot(1, num_plots, i + 1)
