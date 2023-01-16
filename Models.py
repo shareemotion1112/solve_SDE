@@ -181,7 +181,7 @@ class VE_SDE:
         self.n_batch = n_batch
         self.width = width
         self.height = height
-        self.epsilons = torch.randn(self.corrector_steps)
+        self.epsilons = torch.randn(self.corrector_steps) / 100
 
     def sigma_func(self, t):
         return torch.tensor(t ** 2)
@@ -264,14 +264,19 @@ def unit_test_ve_sde():
     scoreNet = train_scoreNet(data_loader, batch_size, 400, 400)
 
     ve_model = VE_SDE(batch_size, 400, 400, scoreNet=scoreNet, predictor_steps = predictor_steps, corrector_steps=corrector_steps)
-    for x, y in data_loader:
-        denoising_x = ve_model.run_denoising(x)
-        pp("denoising x : {denoising_x.shape}")
-        plot(x, scoreNet(x, 1), denoising_x)
+    # for x, y in data_loader:
+    #     denoising_x = ve_model.run_denoising(x)
+    #     pp("denoising x : {denoising_x.shape}")
+    #     plot(x, scoreNet(x, 1), denoising_x)
+    #     # predictor_x = ve_model.run_predictor_only(x)
+    #     # plot(x, scoreNet(x, 1), predictor_x, denoising_x)
 
-        # predictor_x = ve_model.run_predictor_only(x)
-        # plot(x, scoreNet(x, 1), predictor_x, denoising_x)
-    
+    # random matrix check    
+    x = torch.abs(torch.randn((1, 1, 400, 400)))
+    for i in range(1000):
+        denoised_x = ve_model.run_denoising(x)
+        plot(denoised_x)
+        x = denoised_x
 
 def unit_test_scorenet():    
     from torch.utils.data import DataLoader

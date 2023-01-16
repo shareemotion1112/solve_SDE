@@ -31,4 +31,6 @@ def plot(*args):
         plt.subplot(1, num_plots, i + 1)
         plt.imshow(arg[0, 0, :, :].cpu().detach().numpy())
     plt.subplots_adjust(hspace=0.5)
-    plt.show()
+    plt.show(block=False)
+    plt.pause(1)
+    plt.close()
