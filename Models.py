@@ -6,6 +6,7 @@ import numpy as np
 from cPrint import pp
 from Utils import convert_to_torch_tensor, plot
 from tqdm import trange
+import gc
 
 SIGMA = torch.tensor(0.05)
 TIME_STEP = 0.01
@@ -182,7 +183,6 @@ class VE_SDE:
         self.n_batch = n_batch
         self.width = width
         self.height = height
-        self.epsilons = torch.randn(self.corrector_steps) / 100
 
     def sigma_func(self, t):
         return t ** 2
@@ -190,10 +190,7 @@ class VE_SDE:
     def drift_func(self, t):
         return torch.sqrt(2 * t) * torch.randn(1).to(DEVICE)
 
-    def predictor(self, x, step):
-        if step is not None:
-            self.predictor_steps = step
-
+    def predictor(self, x):
         for t in trange(self.predictor_steps - 1, 0, -1):
             t = t * TIME_STEP
             sigma_diff = (self.sigma_func(t + 1)**2 - self.sigma_func(t)**2)
@@ -202,32 +199,29 @@ class VE_SDE:
             z = torch.randn(1).to(DEVICE) # 이거 평균이 0이고 표준편차가 1인 identity matrix인지 확인 필요 : checked!
             x = x_i_prime + torch.sqrt(sigma_diff) * z            
         return x
-    def corrector(self, x, step):        
-        if step > self.corrector_steps:
-            self.epsilons = torch.randn(step).to(DEVICE)
-        if step is not None:
-            self.corrector_steps = step       
-
+    def corrector(self, x):        
+        epsilon = torch.randn(1) / 1000
         for j in trange(0, self.corrector_steps, 1):
-            t = (j + 1) * TIME_STEP # t = 0이면 scoreNet 게산할때 에러남
+            t = (j + 1) * TIME_STEP
             z = torch.randn(1).to(DEVICE)
 
-            x = x + self.epsilons[j] * self.scoreNet(x, t) + torch.sqrt(torch.abs(2 * self.epsilons[j])) * z
-            # x = x + self.epsilons * self.scoreNet(x, t) + torch.sqrt(torch.abs(2 * self.epsilons)) * z
+            x = x + epsilon * self.scoreNet(x, t) + torch.sqrt(torch.abs(2 * epsilon)) * z
 
             if torch.sum(torch.isnan(x)) > 0:
-                print(x)
-            
+                print(x)            
         return x
 
     def run_denoising(self, x, step):
         x = x.to(DEVICE)
-        x = self.predictor(x, step)
-        x = self.corrector(x, step)
+        with torch.no_grad():
+            x = self.predictor(x)
+            x = self.corrector(x)
+        # gc.collect()
+        # torch.cuda.empty_cache()
         return x
 
     def run_predictor_only(self, x, step):
-        return self.predictor(x, step)
+        return self.predictor(x)
 
 def train_scoreNet(data_loader, batch_size, width, height):
     scoreNet = ScoreNet2D(batch_size, 1, width, height)
@@ -247,16 +241,14 @@ def train_scoreNet(data_loader, batch_size, width, height):
 
 
 def unit_test_ve_sde():
-    import os
-    from ImageHandle import get_img_dataloader
     from torch.utils.data import DataLoader
     import torchvision.transforms as transforms
     from torchvision.datasets import MNIST
 
     base_dir = "/Users/shareemotion/Projects/Solve_SDE/Data"
     batch_size = 1
-    predictor_steps = 50 # 너무 노이즈를 많이 넣어도 학습이 안될 듯
-    corrector_steps = 50
+    predictor_steps = 1000 # 너무 노이즈를 많이 넣어도 학습이 안될 듯
+    corrector_steps = 1000
     # n_channel = 1
     # train_dir = os.path.join(base_dir,'train')
     # test_dir = os.path.join(base_dir,'test1')
@@ -277,7 +269,7 @@ def unit_test_ve_sde():
             break
         x = resize_img(x)
         dataset_resize.append([x, y])
-    data_loader = DataLoader(dataset_resize[:100], batch_size=batch_size, shuffle=True)
+    data_loader = DataLoader(dataset_resize[:1000], batch_size=batch_size, shuffle=True)
     scoreNet = train_scoreNet(data_loader, batch_size, 400, 400)
 
     ve_model = VE_SDE(batch_size, 400, 400, scoreNet=scoreNet, predictor_steps = predictor_steps, corrector_steps=corrector_steps)
@@ -289,11 +281,12 @@ def unit_test_ve_sde():
     #     # plot(x, scoreNet(x, 1), predictor_x, denoising_x)
 
     # random matrix check    
-    x = torch.abs(torch.randn((1, 1, 400, 400)))
+    x = torch.abs(torch.randn((1, 1, 400, 400)) / 10)
     for i in range(1000):
-        denoised_x = ve_model.run_denoising(x)
-        plot(denoised_x)
+        denoised_x = ve_model.run_denoising(x, i)        
         x = denoised_x
+        plot(denoised_x)
+    
 
 def unit_test_scorenet():    
     from torch.utils.data import DataLoader
