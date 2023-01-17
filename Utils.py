@@ -24,12 +24,14 @@ def get_optimizer(net, learning_rate=1e-4):
     return torch.optim.Adam(net.parameters(), lr = learning_rate)
 
 
-def plot(*args):
+def plot(*args, name=None):
     import matplotlib.pyplot as plt
     num_plots = len(args)
     for i, arg in enumerate(args):
         plt.subplot(1, num_plots, i + 1)
         plt.imshow(arg[0, 0, :, :].cpu().detach().numpy(), cmap='gray')
+        if name is not None:
+            plt.title(name[i])
     plt.subplots_adjust(hspace=0.5)
     plt.show(block=False)
     plt.pause(1)

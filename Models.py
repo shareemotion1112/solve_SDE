@@ -270,7 +270,8 @@ def unit_test_ve_sde():
     data_loader = DataLoader(dataset_resize[:10], batch_size=batch_size, shuffle=True)
     scoreNet = train_scoreNet(data_loader, batch_size, 400, 400)
 
-    ve_model = VE_SDE(batch_size, 400, 400, scoreNet=scoreNet, predictor_steps = predictor_steps, corrector_steps=corrector_steps)
+    ve_model = VE_SDE(batch_size, 400, 400, scoreNet=scoreNet, \
+                        predictor_steps = predictor_steps, corrector_steps=corrector_steps)
     # for x, y in data_loader:
     #     denoising_x = ve_model.run_denoising(x)
     #     pp("denoising x : {denoising_x.shape}")
@@ -278,16 +279,24 @@ def unit_test_ve_sde():
         # predictor_x = ve_model.run_predictor_only(x)
         # plot(x, scoreNet(x, 1), predictor_x, denoising_x)
 
-    # random matrix check    
-    x = torch.abs(torch.randn((1, 1, 400, 400)))
-    for i in range(1000):
-        denoised_x = ve_model.run_denoising(x)        
-        x = denoised_x
-        plot(scoreNet(x, 1), denoised_x)
-    import matplotlib.pyplot as plt
-    plt.imshow(denoised_x[0, 0, :, :].cpu().detach().numpy(), cmap='gray')
-    plt.show()
+    # # random matrix check : 아예 random한 데이터는 어려운 듯    
+    # x = torch.abs(torch.randn((1, 1, 400, 400)))
+    # for i in range(1000):
+    #     denoised_x = ve_model.run_denoising(x)        
+    #     x = denoised_x
+    #     plot(scoreNet(x, 1), denoised_x)
+    # import matplotlib.pyplot as plt
+    # plt.imshow(denoised_x[0, 0, :, :].cpu().detach().numpy(), cmap='gray')
+    # plt.show()
     
+    # 데이터의 가운데를 지우고 테스트 
+    offset = 50
+    for x, y in data_loader:
+        x_cp = x.clone()
+        x_cp[:, :, (200-offset):(200+offset), (200-offset):(200+offset)] = 0
+        denoising_x = ve_model.run_denoising(x_cp)
+        plot(x, scoreNet(x, 1), denoising_x, name=["origin", "score", "denoised"])
+
 
 def unit_test_scorenet():    
     from torch.utils.data import DataLoader
