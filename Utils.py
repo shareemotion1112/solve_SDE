@@ -29,7 +29,7 @@ def plot(*args):
     num_plots = len(args)
     for i, arg in enumerate(args):
         plt.subplot(1, num_plots, i + 1)
-        plt.imshow(arg[0, 0, :, :].cpu().detach().numpy())
+        plt.imshow(arg[0, 0, :, :].cpu().detach().numpy(), cmap='gray')
     plt.subplots_adjust(hspace=0.5)
     plt.show(block=False)
     plt.pause(1)
