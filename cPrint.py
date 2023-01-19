@@ -1,7 +1,7 @@
 
 from varname import nameof
 
-verbose = False
+verbose = True
 
 def pp(txt):
     if verbose is True:
