@@ -81,9 +81,9 @@ def DownSample(x, output_dim):
     return x_mp
 
 def UpSample(prev_x, x):
-    x = Conv2D(x.shape[1])(x)
-    x = tf.concat([prev_x, x], axis=1)
-    x = Conv2DTranspose(x.shape[1])(x)
+    x = Conv2D(x.shape[3], kernel_size=3, strides=1, padding="same")(x)
+    x = tf.concat([prev_x, x], axis=3)
+    x = Conv2DTranspose(x.shape[3], kernel_size=2, strides=2, padding="valid")(x)
     x = LayerNormalization()(x)
     return x
 
@@ -93,7 +93,7 @@ def ScoreNet2D(x, t, channels=[6, 12, 24, 48]):
     x_down1 = DownSample(x_embed, channels[0])
     x_down2 = DownSample(x_down1, channels[1])
     x_btm = DownSample(x_down2, channels[2])
-    x_btm2 = Conv2DTranspose(x_btm.shape[1])(x_btm)
+    x_btm2 = Conv2DTranspose(x_down2.shape[3], kernel_size=2, strides=2, padding="valid")(x_btm)
     x_up1 = UpSample(x_down2, x_btm2)
     x_up2 = UpSample(x_down1, x_up1)
     x = Conv2D(1, kernel_size=3, strides=1, padding="same")(x_up2)
@@ -155,9 +155,8 @@ def train_scoreNet(data_loader, batch_size, width, height):
             
     return scoreNet
 
-import os
-from ImageHandle import get_img_dataloader
-from cPrint import pp
+# import os
+# from ImageHandle import get_img_dataloader
 base_dir = "/Users/shareemotion/Projects/Solve_SDE/Data"
 batch_size = 1
 predictor_steps = 10 # 너무 노이즈를 많이 넣어도 학습이 안될 듯
@@ -176,17 +175,16 @@ train_images.shape
 
 x = tf.random.uniform((1, 400, 400, 1)); output_dim = 1
 inputs = keras.Input(shape=(x.shape[1], x.shape[2], x.shape[3]), name='input')
-output_dim = 1; pp(x.shape)
+output_dim = 1; print(x.shape)
 
 train_loss = tf.keras.metrics.Mean()
 optimizer = Adam(learning_rate=1e-4)
 with tf.GradientTape() as tape:
-    outputs = DownSample(inputs, 1)
+    random_t = tf.random.uniform(shape=[])
+    outputs = ScoreNet2D(inputs, random_t)
     model = keras.Model(inputs, outputs)
-    # model.summary()
-    pred = model(x)
-    test = tf.random.uniform(pred.shape)
-    loss = mse(pred, test)
+    model.summary()
+    loss = loss_fn(model, x, marginal_prob_std=marginal_prob_std)
     train_loss(loss)
 grads = tape.gradient(loss, model.trainable_variables)
 optimizer.apply_gradients(zip(grads, model.trainable_variables))
@@ -194,4 +192,3 @@ optimizer.apply_gradients(zip(grads, model.trainable_variables))
 print(train_loss.result())
 
 # train_acc = tf.keras.metrics.SparseCategoricalAccuracy()
-
