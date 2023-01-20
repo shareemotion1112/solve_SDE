@@ -47,43 +47,47 @@ def unit_test(name):
 
 
 def loss_fn(model, x, marginal_prob_std, eps=1e-5): # ------------------ random t 를 사용??
-    random_t = tf.random.uniform(shape=[x.shape[0]]) * (1. - eps) + eps    
+    random_t = tf.random.uniform(shape=[]) * (1. - eps) + eps    
     z = tf.random.uniform(shape=x.shape, minval=0, maxval=255, dtype=tf.int32)
     z = tf.cast(z, dtype=tf.float32)
     std = marginal_prob_std(random_t)
     perturbed_x = x + z * std
-    score = model(perturbed_x, random_t)
-
+    score = model(perturbed_x, random_t, training=True)
+    # print(f"score dimension : {score.shape}")
     sum = tf.reduce_sum((score * std + z)**2)
 
     loss = tf.reduce_mean(sum)
     return loss
 
-# from keras.models import Sequential
-# from keras.layers import Dense
-# X = tf.keras.layers.Input(shape=[28, 28, 1])
-# def get_model(n_x, n_h1, n_h2):
-#     model = Sequential()
-#     model.add(Dense(n_h1, input_dim=n_x, activation='relu'))
-#     model.add(Dense(n_h2, activation='relu'))
-#     model.add(Dropout(0.5))
-#     model.add(Dense(4, activation='softmax'))
-#     model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
-#     print(model.summary())
-#     return model
+
+# # trainable_variables test
+x = tf.random.uniform((1, 400, 400, 1))
+model = Sequential([Conv2D(1, kernel_size=3, name='11'), Conv2D(1, kernel_size=3, name="22")])
+y = model(x)
+model.summary()
+model.trainable_variables
+inputs = keras.Input((400, 400, 1))
+outputs = inputs
+outputs = model(outputs)
+model = keras.Model(inputs=inputs, outputs=outputs)
+model.summary()
+model.trainable_variables
+with tf.GradientTape() as tape:
+    y = model(x, training=True)
+model.trainable_variables
 
 
 def DownSample(x, output_dim): 
-    x_conv = Conv2D(output_dim, kernel_size=3, strides=1, padding="same")(x)
+    x_conv = Conv2D(output_dim, kernel_size=3, strides=1, padding="same", name="conv2d")(x)
     x_ln = LayerNormalization()(x_conv)
     x_relu = ReLU()(x_ln)
     x_mp = MaxPooling2D((2, 2))(x_relu)
     return x_mp
 
 def UpSample(prev_x, x):
-    x = Conv2D(x.shape[3], kernel_size=3, strides=1, padding="same")(x)
+    x = Conv2D(x.shape[3], kernel_size=3, strides=1, padding="same", name="Conv2d_upsample")(x)
     x = tf.concat([prev_x, x], axis=3)
-    x = Conv2DTranspose(x.shape[3], kernel_size=2, strides=2, padding="valid")(x)
+    x = Conv2DTranspose(x.shape[3], kernel_size=2, strides=2, padding="valid", name="conv2dTranspose_upsample")(x)
     x = LayerNormalization()(x)
     return x
 
@@ -141,54 +145,71 @@ class VE_SDE:
                 x = self.corrector(x, j)
         return x
 
-
-def train_scoreNet(data_loader, batch_size, width, height):
-    scoreNet = ScoreNet2D(batch_size, 1, width, height)
-    optim = Adam(learning_rate=1e-4)
-
-    epochs = 10
-    for x, y in data_loader:
-        print('|', end="")
-        for i in range(epochs):
-            scoreNet_loss = loss_fn(scoreNet, x, marginal_prob_std = marginal_prob_std)
-
-            
-    return scoreNet
-
-# import os
+import os
+from PIL import Image
 # from ImageHandle import get_img_dataloader
 base_dir = "/Users/shareemotion/Projects/Solve_SDE/Data"
 batch_size = 1
 predictor_steps = 10 # 너무 노이즈를 많이 넣어도 학습이 안될 듯
 corrector_steps = 50
-# train_dir = os.path.join(base_dir,'train')
-# test_dir = os.path.join(base_dir,'test1')
-# file_names = os.listdir(train_dir)[:100]
-# scoreNet = train_scoreNet(data_loader, batch_size, 400, 400)
+train_dir = os.path.join(base_dir,'train')
+test_dir = os.path.join(base_dir,'test1')
+file_names = os.listdir(train_dir)[:100]
+
+# file_path = os.path.join(train_dir, file_names[0])
+# img = Image.open(file_path)
+# plt.imshow(im); plt.show()
 
 
-fashion_mnist = tf.keras.datasets.fashion_mnist
-(train_images, train_labels), (test_images, test_labels) = fashion_mnist.load_data()
-train_images.shape
+class ImageDataset:
+    def __init__(self, img_dir, file_names, isResize=True):
+        self.file_names = file_names
+        self.img_dir = img_dir
+        self.isResize = isResize
 
-# x_down = DownSample(x, 1)
+    def transform(self, img):
+        min_width = 300
+        min_height = 300
+        img_cropped = img.crop(((img.size[0] - min_width)/2, (img.size[1] - min_height)/2, img.size[0] - (img.size[0] - min_width)/2, img.size[1] - (img.size[1] - min_height)/2))
+        new_size = (400, 400)
+        im = img_cropped.resize(new_size)
+        return im
 
-x = tf.random.uniform((1, 400, 400, 1)); output_dim = 1
-inputs = keras.Input(shape=(x.shape[1], x.shape[2], x.shape[3]), name='input')
-output_dim = 1; print(x.shape)
+    def __len__(self):
+        return len(self.file_names)
 
+    def __getitem__(self, idx):
+        filename = self.file_names[idx]
+        img_path = os.path.join(self.img_dir, filename)
+        image = Image.open(img_path)
+        if self.isResize:
+            image = self.transform(image)
+        label = filename.split('.')[0]
+        im_arr = np.asarray(image)[:, :, 0]
+        im = im_arr[None, :, :, None]
+        return im, label
+
+dataset = ImageDataset(train_dir, file_names)
+
+
+
+output_dim = 1
+epochs = 10
 train_loss = tf.keras.metrics.Mean()
+random_t = tf.random.uniform(shape=[])
+inputs = keras.Input(shape=(400, 400, 1), name='digits')
+outputs = ScoreNet2D(inputs, random_t)
+model = keras.Model(inputs, outputs)
 optimizer = Adam(learning_rate=1e-4)
-with tf.GradientTape() as tape:
-    random_t = tf.random.uniform(shape=[])
-    outputs = ScoreNet2D(inputs, random_t)
-    model = keras.Model(inputs, outputs)
-    model.summary()
-    loss = loss_fn(model, x, marginal_prob_std=marginal_prob_std)
-    train_loss(loss)
-grads = tape.gradient(loss, model.trainable_variables)
-optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
-print(train_loss.result())
+print(model.trainable_variables)
 
-# train_acc = tf.keras.metrics.SparseCategoricalAccuracy()
+for epoch in range(epochs):
+    for x, label in dataset:        
+        with tf.GradientTape() as tape:            
+            # model.summary()
+            loss = loss_fn(model, x, marginal_prob_std=marginal_prob_std)
+            train_loss(loss)
+        grads = tape.gradient(loss, model.trainable_variables)
+        optimizer.apply_gradients(zip(grads, model.trainable_variables))
+    print(f"{epoch} : {train_loss.result()}")
