@@ -4,9 +4,10 @@ import matplotlib.pyplot as plt
 from tensorflow.python import keras
 from keras.optimizers import Adam
 from keras.models import Sequential
-from keras.layers import Conv2D, LayerNormalization, ReLU, MaxPooling2D, Conv2DTranspose, Dense
+from keras.layers import Conv2D, LayerNormalization, ReLU, MaxPooling2D, Conv2DTranspose, Dense, BatchNormalization
 from keras.losses import mse
 from tqdm import trange
+from keras.layers import Layer
 
 # tensorflow에서는 마지막 차원이 channel
 # input : [batch, in_height, in_width, in_channels] 형식. 28x28x1 형식의 손글씨 이미지.
@@ -52,54 +53,53 @@ def loss_fn(model, x, marginal_prob_std, eps=1e-5): # ------------------ random 
     z = tf.cast(z, dtype=tf.float32)
     std = marginal_prob_std(random_t)
     perturbed_x = x + z * std
-    score = model(perturbed_x, random_t, training=True)
+    score = model(perturbed_x, random_t)
     # print(f"score dimension : {score.shape}")
     sum = tf.reduce_sum((score * std + z)**2)
 
     loss = tf.reduce_mean(sum)
     return loss
 
+class DownSample(keras.Model):
+    def __init__(self, output_dim):
+        super(DownSample, self).__init__()
+        self.output_dim = output_dim   
+        self.conv2d = Conv2D(self.output_dim, kernel_size=3, strides=1, padding="same", name="conv2d")
+        self.bn = BatchNormalization()
+        self.relu = ReLU()
+        self.maxpool = MaxPooling2D((2, 2))
 
-# # trainable_variables test
-x = tf.random.uniform((1, 400, 400, 1))
-model = Sequential([Conv2D(1, kernel_size=3, name='11'), Conv2D(1, kernel_size=3, name="22")])
-y = model(x)
-model.summary()
-model.trainable_variables
-inputs = keras.Input((400, 400, 1))
-outputs = inputs
-outputs = model(outputs)
-model = keras.Model(inputs=inputs, outputs=outputs)
-model.summary()
-model.trainable_variables
-with tf.GradientTape() as tape:
-    y = model(x, training=True)
-model.trainable_variables
+    def call(self, x, training=False):
+        x = self.conv2d(x)
+        x = self.bn(x, training=training)
+        x = self.relu(x)
+        x = self.maxpool(x)
+        return x
 
+class UpSample(keras.Model):
+    def __init__(self):
+        super(UpSample, self).__init__()
+        self.conv2d = Conv2D(x.shape[3], kernel_size=3, strides=1, padding="same", name="Conv2d_upsample")
+        self.conv2dT = Conv2DTranspose(x.shape[3], kernel_size=2, strides=2, padding="valid", name="conv2dTranspose_upsample")
+        self.bn = BatchNormalization()
+        self.relu = ReLU()
 
-def DownSample(x, output_dim): 
-    x_conv = Conv2D(output_dim, kernel_size=3, strides=1, padding="same", name="conv2d")(x)
-    x_ln = LayerNormalization()(x_conv)
-    x_relu = ReLU()(x_ln)
-    x_mp = MaxPooling2D((2, 2))(x_relu)
-    return x_mp
-
-def UpSample(prev_x, x):
-    x = Conv2D(x.shape[3], kernel_size=3, strides=1, padding="same", name="Conv2d_upsample")(x)
-    x = tf.concat([prev_x, x], axis=3)
-    x = Conv2DTranspose(x.shape[3], kernel_size=2, strides=2, padding="valid", name="conv2dTranspose_upsample")(x)
-    x = LayerNormalization()(x)
-    return x
+    def call(self, prev_x, x, training=False):
+        x = self.conv2d(x)
+        x = tf.concat([prev_x, x], axis=3)
+        x = self.conv2dT(x)
+        x = self.bn(x, training=training)
+        return x
 
 
 def ScoreNet2D(x, t, channels=[6, 12, 24, 48]):
     x_embed = GaussianFourierProjection(x)
-    x_down1 = DownSample(x_embed, channels[0])
-    x_down2 = DownSample(x_down1, channels[1])
-    x_btm = DownSample(x_down2, channels[2])
+    x_down1 = DownSample(channels[0])(x_embed)
+    x_down2 = DownSample(channels[1])(x_down1)
+    x_btm = DownSample(channels[2])(x_down2)
     x_btm2 = Conv2DTranspose(x_down2.shape[3], kernel_size=2, strides=2, padding="valid")(x_btm)
-    x_up1 = UpSample(x_down2, x_btm2)
-    x_up2 = UpSample(x_down1, x_up1)
+    x_up1 = UpSample()(x_down2, x_btm2)
+    x_up2 = UpSample()(x_down1, x_up1)
     x = Conv2D(1, kernel_size=3, strides=1, padding="same")(x_up2)
     x_act = tf.math.sigmoid(x)
     denominator = marginal_prob_std(t)
@@ -194,22 +194,24 @@ dataset = ImageDataset(train_dir, file_names)
 
 
 output_dim = 1
-epochs = 10
+epochs = 5
 train_loss = tf.keras.metrics.Mean()
 random_t = tf.random.uniform(shape=[])
-inputs = keras.Input(shape=(400, 400, 1), name='digits')
-outputs = ScoreNet2D(inputs, random_t)
-model = keras.Model(inputs, outputs)
-optimizer = Adam(learning_rate=1e-4)
 
-print(model.trainable_variables)
+x = keras.Input((400, 400, 1))
+y = ScoreNet2D(x, random_t)
+model = keras.Model(inputs=x, outputs=y)
+print(model.summary())
+# print(model.trainable_variables)
+
+optimizer = Adam(learning_rate=1e-2)
 
 for epoch in range(epochs):
     for x, label in dataset:        
-        with tf.GradientTape() as tape:            
-            # model.summary()
-            loss = loss_fn(model, x, marginal_prob_std=marginal_prob_std)
+        with tf.GradientTape() as tape:
+            loss = loss_fn(model, x, marginal_prob_std=marginal_prob_std)            
             train_loss(loss)
         grads = tape.gradient(loss, model.trainable_variables)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
     print(f"{epoch} : {train_loss.result()}")
+model.summary()

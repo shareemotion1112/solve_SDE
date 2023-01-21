@@ -1,79 +1,110 @@
+from __future__ import print_function
+import keras
+from keras.datasets import cifar10
+from keras.preprocessing.image import ImageDataGenerator
+from keras.models import Sequential
+from keras.layers import Dense, Dropout, Activation, Flatten
+from keras.layers import Conv2D, MaxPooling2D, Add
+import os
+from keras.layers import Layer
 import tensorflow as tf
-from tensorflow import keras
-from keras.layers import Dense
-import numpy as np
+tf.autograph.set_verbosity(0)
+# Define the residual block as a new layer
+class Residual(Layer):
+    def __init__(self, channels_in,kernel,**kwargs):
+        super(Residual, self).__init__(**kwargs)
+        self.channels_in = channels_in
+        self.kernel = kernel
+
+    def call(self, x):
+        # the residual block using Keras functional API
+        first_layer =   Activation("linear", trainable=False)(x)
+        x =             Conv2D( self.channels_in,
+                                self.kernel,
+                                padding="same")(first_layer)
+        x =             Activation("relu")(x)
+        x =             Conv2D( self.channels_in,
+                                self.kernel,
+                                padding="same")(x)
+        residual =      Add()([x, first_layer])
+        x =             Activation("relu")(residual)
+        return x
+
+    def compute_output_shape(self, input_shape):
+        return input_shape
+
+batch_size = 32
+num_classes = 10
+epochs = 100
+data_augmentation = True
+num_predictions = 20
+save_dir = os.path.join(os.getcwd(), 'saved_models')
+model_name = 'keras_cifar10_trained_model.h5'
+
+# The data, split between train and test sets:
+(x_train, y_train), (x_test, y_test) = cifar10.load_data()
+print('x_train shape:', x_train.shape)
+print(x_train.shape[0], 'train samples')
+print(x_test.shape[0], 'test samples')
+
+# Convert class vectors to binary class matrices.
+y_train = keras.utils.to_categorical(y_train, num_classes)
+y_test = keras.utils.to_categorical(y_test, num_classes)
 
 
 
+model = Sequential()
+model.add(Conv2D(32, (3, 3), padding='same',
+                 input_shape=x_train.shape[1:]))
+model.add(Activation('relu'))
+model.add(Residual(32,(3,3)))
+model.add(Residual(32,(3,3)))
+model.add(Residual(32,(3,3)))
+model.add(Residual(32,(3,3)))
+model.add(Residual(32,(3,3)))
 
-inputs = keras.Input(shape=(784,), name="digits")
-x1 = Dense(64, activation="relu")(inputs)
-x2 = Dense(64, activation="relu")(x1)
-outputs = Dense(10, name="predictions")(x2)
-model = keras.Model(inputs=inputs, outputs=outputs)
+model.add(Flatten())
+model.add(Dense(512))
+model.add(Activation('relu'))
+model.add(Dropout(0.5))
+model.add(Dense(num_classes))
+model.add(Activation('softmax'))
 
-
-print(model.trainable_variables)
-
-# Instantiate an optimizer.
-optimizer = keras.optimizers.SGD(learning_rate=1e-3)
-# Instantiate a loss function.
-loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
-
-# Prepare the training dataset.
-batch_size = 64
-(x_train, y_train), (x_test, y_test) = keras.datasets.mnist.load_data()
-x_train = np.reshape(x_train, (-1, 784))
-x_test = np.reshape(x_test, (-1, 784))
-
-# Reserve 10,000 samples for validation.
-x_val = x_train[-10000:]
-y_val = y_train[-10000:]
-x_train = x_train[:-10000]
-y_train = y_train[:-10000]
-
-# Prepare the training dataset.
-train_dataset = tf.data.Dataset.from_tensor_slices((x_train, y_train))
-train_dataset = train_dataset.shuffle(buffer_size=1024).batch(batch_size)
-
-# Prepare the validation dataset.
-val_dataset = tf.data.Dataset.from_tensor_slices((x_val, y_val))
-val_dataset = val_dataset.batch(batch_size)
+model.summary()
 
 
 
-epochs = 2
-for epoch in range(epochs):
-    print("\nStart of epoch %d" % (epoch,))
+class ResnetIdentityBlock(tf.keras.Model):
+  def __init__(self, kernel_size, filters):
+    super(ResnetIdentityBlock, self).__init__(name='')
+    filters1, filters2, filters3 = filters
 
-    # Iterate over the batches of the dataset.
-    for step, (x_batch_train, y_batch_train) in enumerate(train_dataset):
+    self.conv2a = tf.keras.layers.Conv2D(filters1, (1, 1))
+    self.bn2a = tf.keras.layers.BatchNormalization()
 
-        # Open a GradientTape to record the operations run
-        # during the forward pass, which enables auto-differentiation.
-        with tf.GradientTape() as tape:
+    self.conv2b = tf.keras.layers.Conv2D(filters2, kernel_size, padding='same')
+    self.bn2b = tf.keras.layers.BatchNormalization()
 
-            # Run the forward pass of the layer.
-            # The operations that the layer applies
-            # to its inputs are going to be recorded
-            # on the GradientTape.
-            logits = model(x_batch_train, training=True)  # Logits for this minibatch
+    self.conv2c = tf.keras.layers.Conv2D(filters3, (1, 1))
+    self.bn2c = tf.keras.layers.BatchNormalization()
 
-            # Compute the loss value for this minibatch.
-            loss_value = loss_fn(y_batch_train, logits)
+  def call(self, input_tensor, training=False):
+    x = self.conv2a(input_tensor)
+    x = self.bn2a(x, training=training)
+    x = tf.nn.relu(x)
 
-        # Use the gradient tape to automatically retrieve
-        # the gradients of the trainable variables with respect to the loss.
-        grads = tape.gradient(loss_value, model.trainable_weights)
+    x = self.conv2b(x)
+    x = self.bn2b(x, training=training)
+    x = tf.nn.relu(x)
 
-        # Run one step of gradient descent by updating
-        # the value of the variables to minimize the loss.
-        optimizer.apply_gradients(zip(grads, model.trainable_weights))
+    x = self.conv2c(x)
+    x = self.bn2c(x, training=training)
 
-        # Log every 200 batches.
-        if step % 200 == 0:
-            print(
-                "Training loss (for one batch) at step %d: %.4f"
-                % (step, float(loss_value))
-            )
-            print("Seen so far: %s samples" % ((step + 1) * batch_size))
+    x += input_tensor
+    return tf.nn.relu(x)
+
+block = ResnetIdentityBlock(1, [1, 2, 3])
+
+_ = block(tf.zeros([1, 2, 3, 3]))
+block.layers
+block.summary()
