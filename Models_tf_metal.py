@@ -26,7 +26,7 @@ def GaussianFourierProjection(x, scale=30):
     proj_kernel = Dense(input_dim, use_bias=False, trainable=False, kernel_initializer='identity', dtype=tf.float32)
     
     x_proj = 2.0 * np.pi * x
-    x_proj = proj_kernel(x_proj)
+    x_proj = proj_kernel(x_proj) * scale
 
     x_proj_sin = tf.sin(x_proj)
     x_proj_cos = tf.cos(x_proj)
@@ -209,7 +209,7 @@ dataset = ImageDataset(train_dir, file_names)
 
 
 output_dim = 1
-epochs = 20
+epochs = 200
 train_loss = tf.keras.metrics.Mean()
 random_t = tf.random.uniform(shape=[])
 
@@ -221,7 +221,7 @@ print(model.summary())
 # tf.compat.v1.disable_eager_execution()
 # tf.compat.v1.enable_eager_execution()
 
-optimizer = Adam(learning_rate=1e-2)
+optimizer = Adam(learning_rate=1e-1)
 losses = []
 for epoch in range(epochs):
     for x, label in dataset:        
@@ -232,4 +232,16 @@ for epoch in range(epochs):
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
     losses.append(train_loss.result())
     print(f"{epoch} : {train_loss.result()}")
-# model.summary()
+
+pred = model(x)
+
+plt.subplot(1, 2, 1)
+plt.imshow(x[0, :, :, :])
+plt.title('original')
+plt.subplot(1, 2, 2)
+plt.imshow(pred[0, :, :, :])
+plt.title('score')
+plt.subplots_adjust(hspace=0.5)
+plt.show()
+
+print(f"max : {np.max(pred)}, min : {np.min(pred)}")
