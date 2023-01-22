@@ -238,14 +238,16 @@ print(model.summary())
 optimizer = Adam(learning_rate=1e-1)
 losses = []
 for epoch in range(epochs):
+    num_items = 0
     for x, label in dataset:        
+        num_items += x.shape[0]
         with tf.GradientTape() as tape:
             loss = loss_fn(model, x, marginal_prob_std=marginal_prob_std)
             train_loss(loss)
         grads = tape.gradient(loss, model.trainable_variables)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
     losses.append(train_loss.result())
-    print(f"{epoch} : {train_loss.result()}")
+    print(f"{epoch} : {train_loss.result() / num_items}")
 
 pred = model(x)
 
