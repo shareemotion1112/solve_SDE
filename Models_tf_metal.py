@@ -178,10 +178,11 @@ file_names = os.listdir(train_dir)[:100]
 
 
 class ImageDataset:
-    def __init__(self, img_dir, file_names, isResize=True):
+    def __init__(self, img_dir, file_names, batch_size=32, isResize=True):
         self.file_names = file_names
         self.img_dir = img_dir
         self.isResize = isResize
+        self.batch_size=batch_size
 
     def transform(self, img):
         min_width = 300
@@ -194,8 +195,8 @@ class ImageDataset:
     def __len__(self):
         return len(self.file_names)
 
-    def __getitem__(self, idx):
-        filename = self.file_names[idx]
+    def get_image_by_index(self, index):
+        filename = self.file_names[index]
         img_path = os.path.join(self.img_dir, filename)
         image = Image.open(img_path)
         if self.isResize:
@@ -205,12 +206,24 @@ class ImageDataset:
         im = im_arr[None, :, :, None]
         return im, label
 
+    def __getitem__(self, idx):
+        res_im = None
+        labels = []
+        for i in range(idx, idx + self.batch_size, 1):
+            im, label = self.get_image_by_index(i)
+            labels.append(label)
+            if res_im is None:
+                res_im = im
+            else:
+                res_im = np.concatenate((res_im, im), axis=0)
+        return res_im, labels
+
 dataset = ImageDataset(train_dir, file_names)
 
 
 
 output_dim = 1
-epochs = 200
+epochs = 30
 train_loss = tf.keras.metrics.Mean()
 random_t = tf.random.uniform(shape=[])
 
