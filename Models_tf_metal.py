@@ -9,7 +9,6 @@ from keras.losses import mse
 from tqdm import trange
 import tensorflow_addons as tfa
 
-
 # tensorflow에서는 마지막 차원이 channel
 # input : [batch, in_height, in_width, in_channels] 형식. 28x28x1 형식의 손글씨 이미지.
 # filter : [filter_height, filter_width, in_channels, out_channels] 형식. 3, 3, 1, 32의 w.
@@ -26,9 +25,8 @@ def GaussianFourierProjection(x, scale=30):
     input_dim = x.shape[len(x.shape)-1]
     proj_kernel = Dense(input_dim, use_bias=False, trainable=False, kernel_initializer='identity', dtype=tf.float32)
     
-    x_proj = 2.0 * np.pi * x
-    x_proj = proj_kernel(x_proj) * scale
-
+    x_proj = 2.0 * np.pi * scale * x    
+    x_proj = proj_kernel(x_proj)
     x_proj_sin = tf.sin(x_proj)
     x_proj_cos = tf.cos(x_proj)
 
@@ -184,13 +182,16 @@ class ImageDataset:
         self.isResize = isResize
         self.batch_size=batch_size
 
+    def normalize(self, img):
+        return (img - np.min(img)) / (np.max(img) - np.min(img))
+
     def transform(self, img):
         min_width = 300
         min_height = 300
         img_cropped = img.crop(((img.size[0] - min_width)/2, (img.size[1] - min_height)/2, img.size[0] - (img.size[0] - min_width)/2, img.size[1] - (img.size[1] - min_height)/2))
         new_size = (400, 400)
         im = img_cropped.resize(new_size)
-        return im
+        return self.normalize(im)
 
     def __len__(self):
         return len(self.file_names)
@@ -231,9 +232,6 @@ x = keras.Input((400, 400, 1))
 y = ScoreNet2D(x, random_t)
 model = keras.Model(inputs=x, outputs=y)
 print(model.summary())
-# print(model.trainable_variables)
-# tf.compat.v1.disable_eager_execution()
-# tf.compat.v1.enable_eager_execution()
 
 optimizer = Adam(learning_rate=1e-1)
 losses = []

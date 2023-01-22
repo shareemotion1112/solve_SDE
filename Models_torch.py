@@ -142,34 +142,20 @@ class ScoreNet2D(nn.Module):
         self.down1 = DownSample(x_embed.shape[1], self.channels[0])
 
         x_down1 = self.down1(x_embed) 
-        pp(f"x_down1 : {x_down1.size()}")
         x_down2 = self.down2(x_down1) 
-        pp(f"x_down2 : {x_down2.size()}")
 
         x_bottom = self.bottom(x_down2)
-        pp(f"x_bottom : {x_bottom.size()}")
         btm = nn.ConvTranspose2d(x_bottom.shape[1], x_bottom.shape[1], kernel_size=2, stride=2, padding=0).to(DEVICE)
         x_bottom = btm(x_bottom)
-        pp(f"x_bottom_conv : {x_bottom.size()}")
 
         x_up1 = self.up1(x_down2, x_bottom); pp(f"x_up1 : {x_up1.shape}")
         x_up2 = self.up2(x_down1, x_up1); pp(f"x_up2 : {x_up2.shape}")
         nnConv2d = nn.Conv2d(x_up2.shape[1], self.n_channel, kernel_size=1, stride=1, padding=0).to(DEVICE)
         x = nnConv2d(x_up2)
-        pp(f"x : {x.shape}")
         x_act = self.act(x)
-        pp(f"x_act : {x_act.shape}")
 
         denominator = marginal_prob_std(t)
-        pp(f"t : {t}")
-        pp(f"denominator : {denominator}")
-        # pp(f"denominator : {denominator.shape}")
-        pp(f"x_act : {x_act.shape}")
-        
-        # x = x_act / denominator[:, None, None, None]
-        x = x_act / denominator
-        # pp(f"final x : {x.shape}")
-        
+        x = x_act / denominator        
         return x 
 
 
