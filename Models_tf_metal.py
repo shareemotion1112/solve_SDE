@@ -91,16 +91,31 @@ class UpSample(keras.Model):
         x = self.bn(x, training=training)
         return x
 
+class myConv2DTrans(keras.Model):
+    def __init__(self, prev_x_dim):
+        super(myConv2DTrans, self).__init__()
+        self.convt = Conv2DTranspose(prev_x_dim, kernel_size=2, strides=2, padding="valid")
+    def call(self, x):
+        x = self.convt(x)
+        return x
+
+class myConv2D(keras.Model):
+    def __init__(self):
+        super(myConv2D, self).__init__()
+        self.conv = Conv2D(1, kernel_size=3, strides=1, padding="same")
+    def call(self, x):
+        x = self.conv(x)
+        return x
 
 def ScoreNet2D(x, t, channels=[6, 12, 24, 48]):
     x_embed = GaussianFourierProjection(x)
     x_down1 = DownSample(channels[0])(x_embed)
     x_down2 = DownSample(channels[1])(x_down1)
-    x_btm = DownSample(channels[2])(x_down2)
-    x_btm2 = Conv2DTranspose(x_down2.shape[3], kernel_size=2, strides=2, padding="valid")(x_btm)
+    x_btm = DownSample(channels[2])(x_down2)    
+    x_btm2 = myConv2DTrans(x_down2.shape[3])(x_btm)
     x_up1 = UpSample()(x_down2, x_btm2)
     x_up2 = UpSample()(x_down1, x_up1)
-    x = Conv2D(1, kernel_size=3, strides=1, padding="same")(x_up2)
+    x = myConv2D()(x_up2)
     x_act = tf.math.sigmoid(x)
     denominator = marginal_prob_std(t)
     return x_act / denominator
@@ -194,7 +209,7 @@ dataset = ImageDataset(train_dir, file_names)
 
 
 output_dim = 1
-epochs = 5
+epochs = 20
 train_loss = tf.keras.metrics.Mean()
 random_t = tf.random.uniform(shape=[])
 
@@ -203,15 +218,18 @@ y = ScoreNet2D(x, random_t)
 model = keras.Model(inputs=x, outputs=y)
 print(model.summary())
 # print(model.trainable_variables)
+# tf.compat.v1.disable_eager_execution()
+# tf.compat.v1.enable_eager_execution()
 
 optimizer = Adam(learning_rate=1e-2)
-
+losses = []
 for epoch in range(epochs):
     for x, label in dataset:        
         with tf.GradientTape() as tape:
-            loss = loss_fn(model, x, marginal_prob_std=marginal_prob_std)            
+            loss = loss_fn(model, x, marginal_prob_std=marginal_prob_std)
             train_loss(loss)
         grads = tape.gradient(loss, model.trainable_variables)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
+    losses.append(train_loss.result())
     print(f"{epoch} : {train_loss.result()}")
-model.summary()
+# model.summary()
