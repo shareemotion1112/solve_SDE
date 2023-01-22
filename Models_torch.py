@@ -228,13 +228,14 @@ def train_scoreNet(data_loader, batch_size, width, height):
 
     epochs = 10
     for x, y in data_loader:
-        print('|', end="")
+        # print('|', end="")
         x = x.to(DEVICE)
         for i in range(epochs):
             scoreNet_loss = loss_fn(scoreNet, x, marginal_prob_std = marginal_prob_std)
             scoreNet_optimizer.zero_grad()
             scoreNet_loss.backward()
             scoreNet_optimizer.step()
+            print(f"epochs : {i}, loss : {scoreNet_loss}")
     return scoreNet
 
 

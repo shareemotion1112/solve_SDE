@@ -4,10 +4,11 @@ import matplotlib.pyplot as plt
 from tensorflow.python import keras
 from keras.optimizers import Adam
 from keras.models import Sequential
-from keras.layers import Conv2D, LayerNormalization, ReLU, MaxPooling2D, Conv2DTranspose, Dense, BatchNormalization
+from keras.layers import Conv2D, ReLU, MaxPooling2D, Conv2DTranspose, Dense, BatchNormalization
 from keras.losses import mse
 from tqdm import trange
-from keras.layers import Layer
+import tensorflow_addons as tfa
+
 
 # tensorflow에서는 마지막 차원이 channel
 # input : [batch, in_height, in_width, in_channels] 형식. 28x28x1 형식의 손글씨 이미지.
@@ -16,7 +17,7 @@ from keras.layers import Layer
 
 SIGMA = 0.05
 TIMESTEP = 0.01
-
+tfa.layers.GroupNormalization()
 
 
 def GaussianFourierProjection(x, scale=30):
@@ -65,13 +66,13 @@ class DownSample(keras.Model):
         super(DownSample, self).__init__()
         self.output_dim = output_dim   
         self.conv2d = Conv2D(self.output_dim, kernel_size=3, strides=1, padding="same", name="conv2d")
-        self.bn = BatchNormalization()
+        self.gn = tfa.layers.GroupNormalization(self.output_dim)
         self.relu = ReLU()
         self.maxpool = MaxPooling2D((2, 2))
 
     def call(self, x, training=False):
         x = self.conv2d(x)
-        x = self.bn(x, training=training)
+        x = self.gn(x, training=training)
         x = self.relu(x)
         x = self.maxpool(x)
         return x
@@ -81,14 +82,14 @@ class UpSample(keras.Model):
         super(UpSample, self).__init__()
         self.conv2d = Conv2D(x.shape[3], kernel_size=3, strides=1, padding="same", name="Conv2d_upsample")
         self.conv2dT = Conv2DTranspose(x.shape[3], kernel_size=2, strides=2, padding="valid", name="conv2dTranspose_upsample")
-        self.bn = BatchNormalization()
+        self.gn = tfa.layers.GroupNormalization(x.shape[3])
         self.relu = ReLU()
 
     def call(self, prev_x, x, training=False):
         x = self.conv2d(x)
         x = tf.concat([prev_x, x], axis=3)
         x = self.conv2dT(x)
-        x = self.bn(x, training=training)
+        x = self.gn(x, training=training)
         return x
 
 class myConv2DTrans(keras.Model):
