@@ -2,7 +2,6 @@ import torch
 from Contant import DEVICE
 import numpy as np
 
-
 def convert_to_torch_tensor(arr):
     return torch.from_numpy(arr).float().to(DEVICE)
 
@@ -36,3 +35,13 @@ def plot(*args, name=None):
     plt.show(block=False)
     plt.pause(1)
     plt.close()
+
+def get_rank(losses, training_loss):
+    from copy import copy
+    losses_c = copy(losses)
+    losses_c.sort()
+    rank = [ i for i, el in enumerate(losses_c) if training_loss > el]
+    if rank == []:
+        rank = [1]
+
+    return len(rank)

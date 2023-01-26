@@ -19,6 +19,15 @@ import tensorflow_addons as tfa
 SIGMA = 0.05
 TIMESTEP = 0.01
 
+def get_rank(losses, training_loss):
+    from copy import copy
+    losses_c = copy(losses)
+    losses_c.sort()
+    rank = [ i for i, el in enumerate(losses_c) if training_loss > el]
+    if rank == []:
+        rank = [1]
+    return len(rank)
+
 
 def GaussianFourierProjection(x, embed_dim=256, scale=30):
     # tensorflow에서는 Weight, bias를 임의로 변경하는 것이 어려운 듯
@@ -144,11 +153,12 @@ from PIL import Image
 # from ImageHandle import get_img_dataloader
 base_dir = "/Users/shareemotion/Projects/Solve_SDE/Data"
 batch_size = 32
-predictor_steps = 10 # 너무 노이즈를 많이 넣어도 학습이 안될 듯
+predictor_steps = 50 # 너무 노이즈를 많이 넣어도 학습이 안될 듯
 corrector_steps = 50
+numberOfFiles = 1024
 train_dir = os.path.join(base_dir,'train')
 test_dir = os.path.join(base_dir,'test1')
-file_names = os.listdir(train_dir)
+file_names = os.listdir(train_dir)[:numberOfFiles]
 
 
 class ImageDataset:
@@ -204,7 +214,7 @@ dataset = ImageDataset(train_dir, file_names, batch_size=batch_size)
 # train scoreNet
 
 output_dim = 1
-epochs = 50
+epochs = 1000
 train_loss = tf.keras.metrics.Mean()
 random_t = tf.random.uniform(shape=[])
 
@@ -213,9 +223,11 @@ y = ScoreNet2D(x, random_t)
 scorenet = keras.Model(inputs=x, outputs=y)
 print(scorenet.summary())
 
-optimizer = Adam(learning_rate=1e-3)
+optimizer = Adam(learning_rate=1e-2)
 losses = []
-for epoch in range(epochs):
+
+epoch = 0
+while True:
     num_items = 0
     for i in trange(len(dataset)):        
         x = dataset[i][0]
@@ -225,20 +237,35 @@ for epoch in range(epochs):
             train_loss(loss)
         grads = tape.gradient(loss, scorenet.trainable_variables)
         optimizer.apply_gradients(zip(grads, scorenet.trainable_variables))
-    losses.append(train_loss.result())
-    print(f"{epoch} : {train_loss.result() / num_items}")
+    current_loss = train_loss.result() / num_items
+    losses.append(current_loss)
+    print(f"{epoch} : {current_loss}")
+    epoch += 1
+
+    if get_rank(losses, current_loss) > 2:
+        break;
+    if epoch > epochs:
+        break;
+
 
 pred = scorenet(x)
 
-plt.subplot(1, 2, 1)
-plt.imshow(x[0, :, :, 0])
-plt.title('original')
-plt.subplot(1, 2, 2)
-plt.imshow(pred[0, :, :, 0])
-plt.title('score')
-plt.subplots_adjust(hspace=0.5)
-plt.show()
+# plt.subplot(1, 2, 1)
+# plt.imshow(x[0, :, :, 0])
+# plt.title('original')
+# plt.subplot(1, 2, 2)
+# plt.imshow(pred[0, :, :, 0])
+# plt.title('score')
+# plt.subplots_adjust(hspace=0.5)
+# plt.show()
 
+
+# model save
+import time
+import math
+filename = 'tf_metal_model' + str(math.ceil(time.time()))
+model_path = os.getcwd() + '/' + filename
+scorenet.save(model_path)
 
 class VE_SDE:
     def __init__(self, n_batch, width, height, predictor_steps = 100, corrector_steps = 10, scoreNet = None):
