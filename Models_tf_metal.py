@@ -119,18 +119,18 @@ def ScoreNet2D(x, t, channels=[6, 12, 24, 48]):
     h4 = myAct()(h4)
 
     #decoding path
-    h = myConv2DTrans(channels[3], 2, 2)(h4)
-    h += myDense(channels[3])(embed)[None, None, ...]
-    h = myGN(channels[2])(h)
-    h = myAct()(h)
-    h = myConv2DTrans(channels[2], 2, 2)(tf.concat([h, h3], axis=-1))
+    h = myConv2DTrans(channels[2], 2, 2)(h4)
     h += myDense(channels[2])(embed)[None, None, ...]
     h = myGN(channels[2])(h)
-    h = myConv2DTrans(channels[1], 2, 2)(tf.concat([h, h2], axis=-1))
-    h += myDense(channels[1])(embed)[None, None, ...]
-    h = myGN(h.shape[3])(h)
     h = myAct()(h)
-    h = myConv2DTrans(channels[0], 2, 1, "same")(tf.concat([h, h1], axis=-1))
+    h = myConv2DTrans(channels[1], 2, 2)(tf.concat([h, h3], axis=-1))
+    h += myDense(channels[1])(embed)[None, None, ...]
+    h = myGN(channels[1])(h)
+    h = myConv2DTrans(channels[0], 2, 2)(tf.concat([h, h2], axis=-1))
+    h += myDense(channels[0])(embed)[None, None, ...]
+    h = myGN(channels[0])(h)
+    h = myAct()(h)
+    h = myConv2DTrans(1, 2, 1, "same")(tf.concat([h, h1], axis=-1))
     denominator = marginal_prob_std(t)
     out = h / denominator
     return out
@@ -203,7 +203,7 @@ dataset = ImageDataset(train_dir, file_names)
 
 
 output_dim = 1
-epochs = 30
+epochs = 20
 train_loss = tf.keras.metrics.Mean()
 random_t = tf.random.uniform(shape=[])
 
@@ -229,17 +229,15 @@ for epoch in range(epochs):
 pred = model(x)
 
 plt.subplot(1, 2, 1)
-plt.imshow(x[0, :, :, :])
+plt.imshow(x[0, :, :, 0])
 plt.title('original')
 plt.subplot(1, 2, 2)
-plt.imshow(pred[0, :, :, :])
+plt.imshow(pred[0, :, :, 0])
 plt.title('score')
 plt.subplots_adjust(hspace=0.5)
 plt.show()
 
 print(f"max : {np.max(pred)}, min : {np.min(pred)}")
-
-
 
 
 class VE_SDE:
