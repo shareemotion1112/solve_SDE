@@ -16,7 +16,6 @@ import tensorflow_addons as tfa
 
 SIGMA = 0.05
 TIMESTEP = 0.01
-tfa.layers.GroupNormalization()
 
 
 def GaussianFourierProjection(x, embed_dim=256, scale=30):
@@ -149,10 +148,6 @@ train_dir = os.path.join(base_dir,'train')
 test_dir = os.path.join(base_dir,'test1')
 file_names = os.listdir(train_dir)[:100]
 
-# file_path = os.path.join(train_dir, file_names[0])
-# img = Image.open(file_path)
-# plt.imshow(im); plt.show()
-
 
 class ImageDataset:
     def __init__(self, img_dir, file_names, batch_size=32, isResize=True):
@@ -201,16 +196,17 @@ class ImageDataset:
 dataset = ImageDataset(train_dir, file_names)
 
 
+# train scoreNet
 
 output_dim = 1
-epochs = 20
+epochs = 50
 train_loss = tf.keras.metrics.Mean()
 random_t = tf.random.uniform(shape=[])
 
 x = keras.Input((400, 400, 1))
 y = ScoreNet2D(x, random_t)
-model = keras.Model(inputs=x, outputs=y)
-print(model.summary())
+scorenet = keras.Model(inputs=x, outputs=y)
+print(scorenet.summary())
 
 optimizer = Adam(learning_rate=1e-1)
 losses = []
@@ -219,14 +215,14 @@ for epoch in range(epochs):
     for x, label in dataset:        
         num_items += x.shape[0]
         with tf.GradientTape() as tape:
-            loss = loss_fn(model, x, marginal_prob_std=marginal_prob_std)
+            loss = loss_fn(scorenet, x, marginal_prob_std=marginal_prob_std)
             train_loss(loss)
-        grads = tape.gradient(loss, model.trainable_variables)
-        optimizer.apply_gradients(zip(grads, model.trainable_variables))
+        grads = tape.gradient(loss, scorenet.trainable_variables)
+        optimizer.apply_gradients(zip(grads, scorenet.trainable_variables))
     losses.append(train_loss.result())
     print(f"{epoch} : {train_loss.result() / num_items}")
 
-pred = model(x)
+pred = scorenet(x)
 
 plt.subplot(1, 2, 1)
 plt.imshow(x[0, :, :, 0])
@@ -236,8 +232,6 @@ plt.imshow(pred[0, :, :, 0])
 plt.title('score')
 plt.subplots_adjust(hspace=0.5)
 plt.show()
-
-print(f"max : {np.max(pred)}, min : {np.min(pred)}")
 
 
 class VE_SDE:
@@ -278,3 +272,40 @@ class VE_SDE:
             for j in range(0, self.corrector_steps, 1):
                 x = self.corrector(x, j)
         return x
+
+
+
+ve_model = VE_SDE(batch_size, 400, 400, scoreNet=scorenet, \
+                    predictor_steps = predictor_steps, corrector_steps=corrector_steps)
+# for x, y in data_loader:
+#     denoising_x = ve_model.run_denoising(x)
+#     pp("denoising x : {denoising_x.shape}")
+#     plot(x, scoreNet(x, 1), denoising_x)
+    # predictor_x = ve_model.run_predictor_only(x)
+    # plot(x, scoreNet(x, 1), predictor_x, denoising_x)
+
+# # random matrix check : 아예 random한 데이터는 어려운 듯    
+# x = torch.abs(torch.randn((1, 1, 400, 400)))
+# for i in range(1000):
+#     denoised_x = ve_model.run_denoising(x)        
+#     x = denoised_x
+#     plot(scoreNet(x, 1), denoised_x)
+# import matplotlib.pyplot as plt
+# plt.imshow(denoised_x[0, 0, :, :].cpu().detach().numpy(), cmap='gray')
+# plt.show()
+
+# 데이터의 가운데를 지우고 테스트 
+import copy
+offset = 50
+for x, y in dataset:
+    x_cp = copy.copy(x)
+    x_cp[:, (200-offset):(200+offset), (200-offset):(200+offset), :] = 0
+    denoising_x = ve_model.run_denoising(x_cp)
+    plt.subplot(1, 2, 1)
+    plt.imshow(x[0, :, :, :])
+    plt.title('original')
+    plt.subplot(1, 2, 2)
+    plt.imshow(denoising_x[0, :, :, :])
+    plt.title('denoised')
+    plt.subplots_adjust(hspace=0.5)
+    plt.show()
