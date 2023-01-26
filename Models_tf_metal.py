@@ -1,3 +1,5 @@
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # or any {'0', '1', '2'}
 import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
@@ -211,7 +213,7 @@ y = ScoreNet2D(x, random_t)
 scorenet = keras.Model(inputs=x, outputs=y)
 print(scorenet.summary())
 
-optimizer = Adam(learning_rate=1e-1)
+optimizer = Adam(learning_rate=1e-3)
 losses = []
 for epoch in range(epochs):
     num_items = 0
