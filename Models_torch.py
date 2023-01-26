@@ -148,8 +148,8 @@ class ScoreNet2D(nn.Module):
         btm = nn.ConvTranspose2d(x_bottom.shape[1], x_bottom.shape[1], kernel_size=2, stride=2, padding=0).to(DEVICE)
         x_bottom = btm(x_bottom)
 
-        x_up1 = self.up1(x_down2, x_bottom); pp(f"x_up1 : {x_up1.shape}")
-        x_up2 = self.up2(x_down1, x_up1); pp(f"x_up2 : {x_up2.shape}")
+        x_up1 = self.up1(x_down2, x_bottom)
+        x_up2 = self.up2(x_down1, x_up1)
         nnConv2d = nn.Conv2d(x_up2.shape[1], self.n_channel, kernel_size=1, stride=1, padding=0).to(DEVICE)
         x = nnConv2d(x_up2)
         x_act = self.act(x)

@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from tensorflow.python import keras
 from keras.optimizers import Adam
 from keras.models import Sequential
-from keras.layers import Conv2D, ReLU, MaxPooling2D, Conv2DTranspose, Dense, BatchNormalization
+from keras.layers import Conv2D, Conv2DTranspose, Dense
 from keras.losses import mse
 from tqdm import trange
 import tensorflow_addons as tfa
@@ -19,14 +19,13 @@ TIMESTEP = 0.01
 tfa.layers.GroupNormalization()
 
 
-def GaussianFourierProjection(x, scale=30):
+def GaussianFourierProjection(x, embed_dim=256, scale=30):
     # tensorflow에서는 Weight, bias를 임의로 변경하는 것이 어려운 듯
-    # keras 패키지의 미리 만들어진 Weight를 사용
-    input_dim = x.shape[len(x.shape)-1]
-    proj_kernel = Dense(input_dim, use_bias=False, trainable=False, kernel_initializer='identity', dtype=tf.float32)
+    # keras 패키지의 미리 만들어진 Weight를 사용    
     
-    x_proj = 2.0 * np.pi * scale * x    
-    x_proj = proj_kernel(x_proj)
+    W = tf.random.uniform((1, embed_dim // 2))
+    x_proj = 2.0 * np.pi * scale * x
+    x_proj = W * x_proj
     x_proj_sin = tf.sin(x_proj)
     x_proj_cos = tf.cos(x_proj)
 
@@ -59,105 +58,85 @@ def loss_fn(model, x, marginal_prob_std, eps=1e-5): # ------------------ random 
     loss = tf.reduce_mean(sum)
     return loss
 
-class DownSample(keras.Model):
-    def __init__(self, output_dim):
-        super(DownSample, self).__init__()
-        self.output_dim = output_dim   
-        self.conv2d = Conv2D(self.output_dim, kernel_size=3, strides=1, padding="same", name="conv2d")
-        self.gn = tfa.layers.GroupNormalization(self.output_dim)
-        self.relu = ReLU()
-        self.maxpool = MaxPooling2D((2, 2))
-
-    def call(self, x, training=False):
-        x = self.conv2d(x)
-        x = self.gn(x, training=training)
-        x = self.relu(x)
-        x = self.maxpool(x)
-        return x
-
-class UpSample(keras.Model):
-    def __init__(self):
-        super(UpSample, self).__init__()
-        self.conv2d = Conv2D(x.shape[3], kernel_size=3, strides=1, padding="same", name="Conv2d_upsample")
-        self.conv2dT = Conv2DTranspose(x.shape[3], kernel_size=2, strides=2, padding="valid", name="conv2dTranspose_upsample")
-        self.gn = tfa.layers.GroupNormalization(x.shape[3])
-        self.relu = ReLU()
-
-    def call(self, prev_x, x, training=False):
-        x = self.conv2d(x)
-        x = tf.concat([prev_x, x], axis=3)
-        x = self.conv2dT(x)
-        x = self.gn(x, training=training)
-        return x
+class myDense(keras.Model):
+    def __init__(self, dim):
+        super(myDense, self).__init__()
+        self.dense = Dense(dim, dtype=tf.float32)
+    def call(self, x):
+        return self.dense(x)
 
 class myConv2DTrans(keras.Model):
-    def __init__(self, prev_x_dim):
+    def __init__(self, prev_x_dim, kernel_size, strides, padding="valid"):
         super(myConv2DTrans, self).__init__()
-        self.convt = Conv2DTranspose(prev_x_dim, kernel_size=2, strides=2, padding="valid")
+        self.convt = Conv2DTranspose(prev_x_dim, kernel_size=kernel_size, strides=strides, use_bias=False, padding=padding)
     def call(self, x):
         x = self.convt(x)
         return x
 
 class myConv2D(keras.Model):
-    def __init__(self):
+    def __init__(self, output_dim, kernel_size, strides, padding="same"):
         super(myConv2D, self).__init__()
-        self.conv = Conv2D(1, kernel_size=3, strides=1, padding="same")
+        self.conv2d = Conv2D(output_dim, kernel_size=kernel_size, strides=strides, padding=padding, use_bias=False, name="conv2d")
     def call(self, x):
-        x = self.conv(x)
+        return self.conv2d(x)
+
+class myAct(keras.Model):
+    def __init__(self):
+        super(myAct, self).__init__()
+        self.act = tf.sigmoid
+    def call(self, x):
+        x = x * self.act(x)
         return x
+
+class myGN(keras.Model):
+    def __init__(self, dim):
+        super(myGN, self).__init__()
+        self.gn = tfa.layers.GroupNormalization(dim)
+    def call(self, x):
+        return self.gn(x)
 
 def ScoreNet2D(x, t, channels=[6, 12, 24, 48]):
-    x_embed = GaussianFourierProjection(x)
-    x_down1 = DownSample(channels[0])(x_embed)
-    x_down2 = DownSample(channels[1])(x_down1)
-    x_btm = DownSample(channels[2])(x_down2)    
-    x_btm2 = myConv2DTrans(x_down2.shape[3])(x_btm)
-    x_up1 = UpSample()(x_down2, x_btm2)
-    x_up2 = UpSample()(x_down1, x_up1)
-    x = myConv2D()(x_up2)
-    x_act = tf.math.sigmoid(x)
+    x_embed = GaussianFourierProjection(t)
+    embed = myDense(256)(x_embed)
+
+    #encoding path
+    h1 = myConv2D(channels[0], 3, 1)(x)
+    # test = myDense(channels[0])(embed)[..., None, None] # test.shape == [1, 6, 1, 1]
+    h1 += myDense(channels[0])(embed)[None, None, ...]
+    h1 = myGN(h1.shape[3])(h1)
+    h1 = myAct()(h1)
+    h2 = myConv2D(channels[1], 3, 2)(h1)
+    h2 += myDense(channels[1])(embed)[None, None, ...]
+    h2 = myGN(h1.shape[3])(h2)
+    h2 = myAct()(h2)
+    h3 = myConv2D(channels[2], 3, 2)(h2)
+    h3 += myDense(channels[2])(embed)[None, None, ...]
+    h3 = myGN(h2.shape[3])(h3)
+    h3 = myAct()(h3)
+    h4 = myConv2D(channels[3], 3, 2)(h3)
+    h4 += myDense(channels[3])(embed)[None, None, ...]
+    h4 = myGN(h3.shape[3])(h4)
+    h4 = myAct()(h4)
+
+    #decoding path
+    h = myConv2DTrans(channels[3], 2, 2)(h4)
+    h += myDense(channels[3])(embed)[None, None, ...]
+    h = myGN(channels[2])(h)
+    h = myAct()(h)
+    h = myConv2DTrans(channels[2], 2, 2)(tf.concat([h, h3], axis=-1))
+    h += myDense(channels[2])(embed)[None, None, ...]
+    h = myGN(channels[2])(h)
+    h = myConv2DTrans(channels[1], 2, 2)(tf.concat([h, h2], axis=-1))
+    h += myDense(channels[1])(embed)[None, None, ...]
+    h = myGN(h.shape[3])(h)
+    h = myAct()(h)
+    h = myConv2DTrans(channels[0], 2, 1, "same")(tf.concat([h, h1], axis=-1))
     denominator = marginal_prob_std(t)
-    return x_act / denominator
+    out = h / denominator
+    return out
 
 
-class VE_SDE:
-    def __init__(self, n_batch, width, height, predictor_steps = 100, corrector_steps = 10, scoreNet = None):
-        self.scoreNet = scoreNet
-        self.predictor_steps = predictor_steps
-        self.corrector_steps = corrector_steps
-        self.drift_coef = self.drift_func
-        self.diffusion_coef = 0
-        self.n_batch = n_batch
-        self.width = width
-        self.height = height
-        self.epsilon = 1e-5
 
-    def sigma_func(self, t):
-        return t ** 2
-
-    def drift_func(self, t):
-        return tf.math.sqrt(2 * t) * tf.random.uniform(shape=[])
-
-    def predictor(self, x, i):        
-        t = i * TIMESTEP
-        sigma_diff = (self.sigma_func(t + 1)**2 - self.sigma_func(t)**2)        
-        x_i_prime = x + sigma_diff * self.scoreNet(x, t)
-        z = tf.random.uniform(shape=[])
-        x = x_i_prime + tf.math.sqrt(sigma_diff) * z            
-        return x
-    def corrector(self, x, j):
-        t = (j + 1) * TIMESTEP
-        z = tf.random.uniform(shape=[])
-
-        x = x + self.epsilon * self.scoreNet(x, t) + tf.math.sqrt(tf.math.abs(2 * self.epsilon)) * z        
-        return x
-
-    def run_denoising(self, x):
-        for i in trange(self.predictor_steps -1, 0, -1):
-            x = self.predictor(x, i)
-            for j in range(0, self.corrector_steps, 1):
-                x = self.corrector(x, j)
-        return x
 
 import os
 from PIL import Image
@@ -259,3 +238,45 @@ plt.subplots_adjust(hspace=0.5)
 plt.show()
 
 print(f"max : {np.max(pred)}, min : {np.min(pred)}")
+
+
+
+
+class VE_SDE:
+    def __init__(self, n_batch, width, height, predictor_steps = 100, corrector_steps = 10, scoreNet = None):
+        self.scoreNet = scoreNet
+        self.predictor_steps = predictor_steps
+        self.corrector_steps = corrector_steps
+        self.drift_coef = self.drift_func
+        self.diffusion_coef = 0
+        self.n_batch = n_batch
+        self.width = width
+        self.height = height
+        self.epsilon = 1e-5
+
+    def sigma_func(self, t):
+        return t ** 2
+
+    def drift_func(self, t):
+        return tf.math.sqrt(2 * t) * tf.random.uniform(shape=[])
+
+    def predictor(self, x, i):        
+        t = i * TIMESTEP
+        sigma_diff = (self.sigma_func(t + 1)**2 - self.sigma_func(t)**2)        
+        x_i_prime = x + sigma_diff * self.scoreNet(x, t)
+        z = tf.random.uniform(shape=[])
+        x = x_i_prime + tf.math.sqrt(sigma_diff) * z            
+        return x
+    def corrector(self, x, j):
+        t = (j + 1) * TIMESTEP
+        z = tf.random.uniform(shape=[])
+
+        x = x + self.epsilon * self.scoreNet(x, t) + tf.math.sqrt(tf.math.abs(2 * self.epsilon)) * z        
+        return x
+
+    def run_denoising(self, x):
+        for i in trange(self.predictor_steps -1, 0, -1):
+            x = self.predictor(x, i)
+            for j in range(0, self.corrector_steps, 1):
+                x = self.corrector(x, j)
+        return x
