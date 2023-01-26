@@ -141,12 +141,12 @@ import os
 from PIL import Image
 # from ImageHandle import get_img_dataloader
 base_dir = "/Users/shareemotion/Projects/Solve_SDE/Data"
-batch_size = 1
+batch_size = 64
 predictor_steps = 10 # 너무 노이즈를 많이 넣어도 학습이 안될 듯
 corrector_steps = 50
 train_dir = os.path.join(base_dir,'train')
 test_dir = os.path.join(base_dir,'test1')
-file_names = os.listdir(train_dir)[:100]
+file_names = os.listdir(train_dir)
 
 
 class ImageDataset:
@@ -162,13 +162,16 @@ class ImageDataset:
     def transform(self, img):
         min_width = 300
         min_height = 300
-        img_cropped = img.crop(((img.size[0] - min_width)/2, (img.size[1] - min_height)/2, img.size[0] - (img.size[0] - min_width)/2, img.size[1] - (img.size[1] - min_height)/2))
+        img_cropped = img.crop(((img.size[0] - min_width)/2, \
+                                (img.size[1] - min_height)/2, \
+                                img.size[0] - (img.size[0] - min_width)/2, \
+                                img.size[1] - (img.size[1] - min_height)/2))
         new_size = (400, 400)
         im = img_cropped.resize(new_size)
         return self.normalize(im)
 
     def __len__(self):
-        return len(self.file_names)
+        return len(self.file_names) // self.batch_size + 1
 
     def get_image_by_index(self, index):
         filename = self.file_names[index]
@@ -184,7 +187,7 @@ class ImageDataset:
     def __getitem__(self, idx):
         res_im = None
         labels = []
-        for i in range(idx, idx + self.batch_size, 1):
+        for i in range(idx * self.batch_size, (idx + 1) * self.batch_size, 1):
             im, label = self.get_image_by_index(i)
             labels.append(label)
             if res_im is None:
@@ -193,7 +196,7 @@ class ImageDataset:
                 res_im = np.concatenate((res_im, im), axis=0)
         return res_im, labels
 
-dataset = ImageDataset(train_dir, file_names)
+dataset = ImageDataset(train_dir, file_names, batch_size=batch_size)
 
 
 # train scoreNet
@@ -212,7 +215,8 @@ optimizer = Adam(learning_rate=1e-1)
 losses = []
 for epoch in range(epochs):
     num_items = 0
-    for x, label in dataset:        
+    for i in trange(len(dataset)):        
+        x = dataset[i][0]
         num_items += x.shape[0]
         with tf.GradientTape() as tape:
             loss = loss_fn(scorenet, x, marginal_prob_std=marginal_prob_std)
