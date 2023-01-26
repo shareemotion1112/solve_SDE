@@ -141,7 +141,7 @@ import os
 from PIL import Image
 # from ImageHandle import get_img_dataloader
 base_dir = "/Users/shareemotion/Projects/Solve_SDE/Data"
-batch_size = 64
+batch_size = 32
 predictor_steps = 10 # 너무 노이즈를 많이 넣어도 학습이 안될 듯
 corrector_steps = 50
 train_dir = os.path.join(base_dir,'train')
@@ -171,7 +171,7 @@ class ImageDataset:
         return self.normalize(im)
 
     def __len__(self):
-        return len(self.file_names) // self.batch_size + 1
+        return len(self.file_names) // self.batch_size
 
     def get_image_by_index(self, index):
         filename = self.file_names[index]
