@@ -32,3 +32,22 @@ ttt = Dense(256, 32)(tt); print(ttt.shape)
 x = torch.randn((400, 400, 3))
 print(x.shape)
 x1 = Dense(3, 16)(x); print(x1.shape)
+
+
+import tensorflow_addons as tfa
+
+
+data = tf.keras.datasets.mnist.load_data(path="mnist.npz")
+images = data[0][0]
+
+
+im_org = images[0, :, :]
+       
+im = np.array(im_org)
+im2 = im.repeat(2, axis=0).repeat(2, axis=1)
+
+plt.subplot(1, 2, 1)
+plt.imshow(im_org)
+plt.subplot(1, 2, 2)
+plt.imshow(im2)
+plt.show()

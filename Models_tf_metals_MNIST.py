@@ -26,12 +26,12 @@ SIGMA = 25.
 IS_TRAIN_MODEL = True
 IS_SAVEFIG = False
 BATCH_SIZE = 32
-NUM_STEPS = 1000
+NUM_STEPS = 20
 EPS = 1e-3
 LEARNING_RATE = 1e-1
 SNR = 0.16
 output_dim = 1
-epochs = 50
+epochs = 20
 
 
 # base_dir = "/Users/shareemotion/Projects/Solve_SDE/Data"
@@ -55,11 +55,11 @@ class ImageDataset:
         res_im = None        
         for i in range(idx * self.batch_size, (idx + 1) * self.batch_size, 1):
             im = np.array(self.images[idx, :, :])
-            im = np.resize(im, (48, 48))
+            im_upsampling = im.repeat(2, axis=0).repeat(2, axis=1)
             if res_im is None:
-                res_im = im[None, :, :]
+                res_im = im_upsampling[None, :, :]
             else:
-                res_im = np.concatenate((res_im, im[None, :, :]), axis=0)
+                res_im = np.concatenate((res_im, im_upsampling[None, :, :]), axis=0)
         return res_im
 
 dataset = ImageDataset(images, batch_size=BATCH_SIZE)
@@ -216,7 +216,7 @@ if IS_TRAIN_MODEL is True:
     train_loss = tf.keras.metrics.Mean()
     random_t = tf.random.uniform(shape=[])
 
-    x = keras.Input((48, 48, 1))
+    x = keras.Input((56, 56, 1))
     y = ScoreNet2D(x, random_t)
     scorenet = keras.Model(inputs=x, outputs=y)
     print(scorenet.summary())
@@ -266,7 +266,7 @@ if IS_TRAIN_MODEL is True:
 
 if IS_TRAIN_MODEL is False:
     # # model load
-    files = os.listdir()
+    files = os.listdir()    
     import re
     folders = []
     for file in files:
