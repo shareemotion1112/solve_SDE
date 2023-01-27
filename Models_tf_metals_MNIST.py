@@ -28,14 +28,41 @@ BATCH_SIZE = 32
 NUM_STEPS = 100
 EPS = 1e-3
 LEARNING_RATE = 1e-2
+SNR = 0.16
 numberOfFiles = 10000
 output_dim = 1
 epochs = 1000
+
 
 base_dir = "/Users/shareemotion/Projects/Solve_SDE/Data"
 train_dir = os.path.join(base_dir,'train')
 test_dir = os.path.join(base_dir,'test1')
 file_names = os.listdir(train_dir)[:numberOfFiles]
+
+
+data = tf.keras.datasets.mnist.load_data(path="mnist.npz")
+images = data[0][0]
+
+class ImageDataset:
+    def __init__(self, images, batch_size=BATCH_SIZE, isResize=True):
+        self.images = images
+        self.batch_size=batch_size
+
+    def __len__(self):
+        return self.images.shape[0] // self.batch_size
+
+    def __getitem__(self, idx):
+        res_im = None        
+        for i in range(idx * self.batch_size, (idx + 1) * self.batch_size, 1):
+            im = np.array(self.images[idx, :, :])
+            im = np.resize(im, (48, 48))
+            if res_im is None:
+                res_im = im[None, :, :]
+            else:
+                res_im = np.concatenate((res_im, im[None, :, :]), axis=0)
+        return res_im
+
+dataset = ImageDataset(images, batch_size=BATCH_SIZE)
 
 
 def get_rank(losses, training_loss):
@@ -81,7 +108,7 @@ def unit_test(name):
         grad = scorenet(x, time_steps[1])
         grad_norm = tf.math.reduce_mean(tf.norm(tf.reshape(grad, (grad.shape[0], -1)), axis=-1))
         noise_norm = np.sqrt(np.prod(x.shape[1:])) # 400
-        langevin_step_size = 2 * (snr * noise_norm / grad_norm)**2
+        langevin_step_size = 2 * (SNR * noise_norm / grad_norm)**2
         x = x + langevin_step_size * grad + tf.sqrt(2*langevin_step_size) * tf.random.uniform(x.shape)
         batch_time_step = tf.ones(BATCH_SIZE) * time_step
         def sigma_func(t):
@@ -98,7 +125,7 @@ def loss_fn(model, x, marginal_prob_std, eps=EPS): # ------------------ random t
     perturbed_x = x + z * std
     score = model(perturbed_x, random_t)
     # print(f"score dimension : {score.shape}")
-    sum = tf.reduce_sum((score * std + z)**2)
+    sum = tf.reduce_sum((score * std + z[:, :, :, None])**2)
 
     loss = tf.reduce_mean(sum)
     return loss
@@ -111,7 +138,7 @@ class myDense(keras.Model):
         return self.dense(x)
 
 class myConv2DTrans(keras.Model):
-    def __init__(self, prev_x_dim, kernel_size, strides, padding="valid"):
+    def __init__(self, prev_x_dim, kernel_size, strides, padding):
         super(myConv2DTrans, self).__init__()
         self.convt = Conv2DTranspose(prev_x_dim, kernel_size=kernel_size, strides=strides, use_bias=False, padding=padding)
     def call(self, x):
@@ -119,7 +146,7 @@ class myConv2DTrans(keras.Model):
         return x
 
 class myConv2D(keras.Model):
-    def __init__(self, output_dim, kernel_size, strides, padding="same"):
+    def __init__(self, output_dim, kernel_size, strides, padding):
         super(myConv2D, self).__init__()
         self.conv2d = Conv2D(output_dim, kernel_size=kernel_size, strides=strides, padding=padding, use_bias=False, name="conv2d")
     def call(self, x):
@@ -145,98 +172,51 @@ def ScoreNet2D(x, t, channels=[6, 12, 24, 48]):
     embed = myDense(256)(x_embed)
 
     #encoding path
-    h1 = myConv2D(channels[0], 3, 1)(x)
+    h1 = myConv2D(channels[0], 3, 1, "same")(x)
     # test = myDense(channels[0])(embed)[..., None, None] # test.shape == [1, 6, 1, 1]
     h1 += myDense(channels[0])(embed)[None, None, ...]
-    h1 = myGN(h1.shape[3])(h1)
+    h1 = myGN(channels[0])(h1)
     h1 = myAct()(h1)
-    h2 = myConv2D(channels[1], 3, 2)(h1)
+    h2 = myConv2D(channels[1], 3, 2, "same")(h1)
     h2 += myDense(channels[1])(embed)[None, None, ...]
-    h2 = myGN(h1.shape[3])(h2)
+    h2 = myGN(channels[1])(h2)
     h2 = myAct()(h2)
-    h3 = myConv2D(channels[2], 3, 2)(h2)
+    h3 = myConv2D(channels[2], 3, 2, padding="same")(h2)
     h3 += myDense(channels[2])(embed)[None, None, ...]
-    h3 = myGN(h2.shape[3])(h3)
+    h3 = myGN(channels[2])(h3)
     h3 = myAct()(h3)
-    h4 = myConv2D(channels[3], 3, 2)(h3)
+    h4 = myConv2D(channels[3], 3, 2, "same")(h3)
     h4 += myDense(channels[3])(embed)[None, None, ...]
-    h4 = myGN(h3.shape[3])(h4)
+    h4 = myGN(channels[3])(h4)
     h4 = myAct()(h4)
 
     #decoding path
-    h = myConv2DTrans(channels[2], 2, 2)(h4)
+    h = myConv2DTrans(channels[2], 3, 2, "same")(h4)
     h += myDense(channels[2])(embed)[None, None, ...]
     h = myGN(channels[2])(h)
     h = myAct()(h)
-    h = myConv2DTrans(channels[1], 2, 2)(tf.concat([h, h3], axis=-1))
+    h = myConv2DTrans(channels[1], 3, 2, "same")(tf.concat([h, h3], axis=-1))
     h += myDense(channels[1])(embed)[None, None, ...]
     h = myGN(channels[1])(h)
-    h = myConv2DTrans(channels[0], 2, 2)(tf.concat([h, h2], axis=-1))
+    h = myConv2DTrans(channels[0], 3, 2, "same")(tf.concat([h, h2], axis=-1))
     h += myDense(channels[0])(embed)[None, None, ...]
     h = myGN(channels[0])(h)
     h = myAct()(h)
-    h = myConv2DTrans(1, 2, 1, "same")(tf.concat([h, h1], axis=-1))
+    h = myConv2DTrans(1, 3, 1, "same")(tf.concat([h, h1], axis=-1))
     denominator = marginal_prob_std(t)
     out = h / denominator
     return out
 
 
 
-class ImageDataset:
-    def __init__(self, img_dir, file_names, batch_size=BATCH_SIZE, isResize=True):
-        self.file_names = file_names
-        self.img_dir = img_dir
-        self.isResize = isResize
-        self.batch_size=batch_size
 
-    def normalize(self, img):
-        return (img - np.min(img)) / (np.max(img) - np.min(img))
-
-    def transform(self, img):
-        min_width = 300
-        min_height = 300
-        img_cropped = img.crop(((img.size[0] - min_width)/2, \
-                                (img.size[1] - min_height)/2, \
-                                img.size[0] - (img.size[0] - min_width)/2, \
-                                img.size[1] - (img.size[1] - min_height)/2))
-        new_size = (400, 400)
-        im = img_cropped.resize(new_size)
-        return self.normalize(im)
-
-    def __len__(self):
-        return len(self.file_names) // self.batch_size
-
-    def get_image_by_index(self, index):
-        filename = self.file_names[index]
-        img_path = os.path.join(self.img_dir, filename)
-        image = Image.open(img_path)
-        if self.isResize:
-            image = self.transform(image)
-        label = filename.split('.')[0]
-        im_arr = np.asarray(image)[:, :, 0]
-        im = im_arr[None, :, :, None]
-        return im, label
-
-    def __getitem__(self, idx):
-        res_im = None
-        labels = []
-        for i in range(idx * self.batch_size, (idx + 1) * self.batch_size, 1):
-            im, label = self.get_image_by_index(i)
-            labels.append(label)
-            if res_im is None:
-                res_im = im
-            else:
-                res_im = np.concatenate((res_im, im), axis=0)
-        return res_im, labels
-
-dataset = ImageDataset(train_dir, file_names, batch_size=BATCH_SIZE)
 
 if IS_TRAIN_MODEL is True:
     # train scoreNet
     train_loss = tf.keras.metrics.Mean()
     random_t = tf.random.uniform(shape=[])
 
-    x = keras.Input((400, 400, 1))
+    x = keras.Input((48, 48, 1))
     y = ScoreNet2D(x, random_t)
     scorenet = keras.Model(inputs=x, outputs=y)
     print(scorenet.summary())
@@ -248,7 +228,7 @@ if IS_TRAIN_MODEL is True:
     while True:
         num_items = 0
         for i in trange(len(dataset)):        
-            x = dataset[i][0]
+            x = dataset[i]
             num_items += x.shape[0]
             with tf.GradientTape() as tape:
                 loss = loss_fn(scorenet, x, marginal_prob_std=marginal_prob_std)
@@ -292,16 +272,14 @@ else:
 
 
 class VE_SDE:
-    def __init__(self, n_batch, width, height, scoreNet = None):
+    def __init__(self, n_batch, scoreNet):
         self.scoreNet = scoreNet       
         self.n_batch = n_batch
-        self.width = width
-        self.height = height   
 
     def diffusion_coef(self, t, sigma=SIGMA):
         return sigma ** t
     
-    def run_pc_sampler(self, x, num_steps = NUM_STEPS, eps=EPS, snr = 0.16):
+    def run_pc_sampler(self, x, num_steps = NUM_STEPS, eps=EPS, snr = SNR):
         time_steps = np.linspace(1., eps, num_steps)
         step_size = time_steps[0] - time_steps[1]
         
@@ -327,7 +305,7 @@ class VE_SDE:
         return x_mean
 
 
-ve_model = VE_SDE(BATCH_SIZE, 400, 400, scoreNet=scorenet)
+ve_model = VE_SDE(BATCH_SIZE, scorenet)
 # for x, y in data_loader:
 #     denoising_x = ve_model.run_denoising(x)
 #     pp("denoising x : {denoising_x.shape}")
