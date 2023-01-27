@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tensorflow.python import keras
 from keras.optimizers import Adam
+from keras.optimizers.schedules.learning_rate_schedule import ExponentialDecay
 from keras.models import Sequential
 from keras.layers import Conv2D, Conv2DTranspose, Dense
 from keras.losses import mse
@@ -21,23 +22,22 @@ from PIL import Image
 
 
 
-SIGMA = 5.
+SIGMA = 25.
 IS_TRAIN_MODEL = True
 IS_SAVEFIG = False
 BATCH_SIZE = 32
-NUM_STEPS = 100
+NUM_STEPS = 1000
 EPS = 1e-3
-LEARNING_RATE = 1e-2
+LEARNING_RATE = 1e-1
 SNR = 0.16
-numberOfFiles = 10000
 output_dim = 1
-epochs = 1000
+epochs = 50
 
 
-base_dir = "/Users/shareemotion/Projects/Solve_SDE/Data"
-train_dir = os.path.join(base_dir,'train')
-test_dir = os.path.join(base_dir,'test1')
-file_names = os.listdir(train_dir)[:numberOfFiles]
+# base_dir = "/Users/shareemotion/Projects/Solve_SDE/Data"
+# train_dir = os.path.join(base_dir,'train')
+# test_dir = os.path.join(base_dir,'test1')
+# file_names = os.listdir(train_dir)[:numberOfFiles]
 
 
 data = tf.keras.datasets.mnist.load_data(path="mnist.npz")
@@ -167,7 +167,7 @@ class myGN(keras.Model):
     def call(self, x):
         return self.gn(x)
 
-def ScoreNet2D(x, t, channels=[6, 12, 24, 48]):
+def ScoreNet2D(x, t, channels=[32, 64, 128, 256]):
     x_embed = GaussianFourierProjection(t)
     embed = myDense(256)(x_embed)
 
@@ -223,10 +223,11 @@ if IS_TRAIN_MODEL is True:
 
     optimizer = Adam(learning_rate=LEARNING_RATE)
     losses = []
-
+    lr_schedule = ExponentialDecay(LEARNING_RATE, 200,.9)
     epoch = 0
     while True:
         num_items = 0
+        optimizer.learning_rate = lr_schedule(epoch)
         for i in trange(len(dataset)):        
             x = dataset[i]
             num_items += x.shape[0]
@@ -244,10 +245,15 @@ if IS_TRAIN_MODEL is True:
             break;
         if epoch > epochs:
             break;
+    
+    # save model
+    filename = 'tf_metal_model_' + str(math.ceil(time.time()))
+    model_path = os.getcwd() + '/' + filename
+    scorenet.save(model_path)
 
     pred = scorenet(x)
     plt.subplot(1, 2, 1)
-    plt.imshow(x[0, :, :, 0])
+    plt.imshow(x[0, :, :])
     plt.title('original')
     plt.subplot(1, 2, 2)
     plt.imshow(pred[0, :, :, 0])
@@ -260,12 +266,23 @@ if IS_TRAIN_MODEL is True:
 
 if IS_TRAIN_MODEL is False:
     # # model load
-    scorenet = keras.models.load_model(os.getcwd() + '/tf_metal_model_1674783323')
-else:
-    # model save
-    filename = 'tf_metal_model_' + str(math.ceil(time.time()))
-    model_path = os.getcwd() + '/' + filename
-    scorenet.save(model_path)
+    files = os.listdir()
+    import re
+    folders = []
+    for file in files:
+        if re.search('tf_metal_model', file) is not None:
+            folders.append(file)
+    dates = []
+    for folder in folders:
+        ll = folder.split('_')
+        date = ll[len(ll)-1]
+        dates.append(date)
+    max_ind = np.argmax(np.array(dates))
+    max_folder = folders[max_ind]
+
+    model_path = os.getcwd() + '/' + max_folder
+    scorenet = keras.models.load_model(model_path)
+    
 
 
 
@@ -328,18 +345,18 @@ os.chdir(original_path + "/results")
 # 데이터의 가운데를 지우고 테스트 
 
 offset = 50
-for x, y in dataset:
+for x in dataset:
     x_cp = copy.copy(x)
-    x_cp[:, (200-offset):(200+offset), (200-offset):(200+offset), :] = 0
-    denoising_x = ve_model.run_pc_sampler(x_cp)
+    x_cp[:, (200-offset):(200+offset), (200-offset):(200+offset)] = 0
+    denoising_x = ve_model.run_pc_sampler(x_cp[:, :, :, None])
 
     image_name = str(math.ceil(time.time())) + '.png'
 
     plt.subplot(1, 2, 1)
-    plt.imshow(x[0, :, :, :])
+    plt.imshow(x[0, :, :])
     plt.title('original')
     plt.subplot(1, 2, 2)
-    plt.imshow(denoising_x[0, :, :, :])
+    plt.imshow(denoising_x[0, :, :])
     plt.title('denoised')
     plt.subplots_adjust(hspace=0.5)
     plt.show(block=False)    
