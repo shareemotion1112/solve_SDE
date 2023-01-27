@@ -8,16 +8,26 @@ from keras.optimizers import Adam
 from keras.models import Sequential
 from keras.layers import Conv2D, Conv2DTranspose, Dense
 from keras.losses import mse
-from tqdm import trange
+from tqdm import trange, tqdm
 import tensorflow_addons as tfa
-
+import time
+import math
+import copy
 # tensorflow에서는 마지막 차원이 channel
 # input : [batch, in_height, in_width, in_channels] 형식. 28x28x1 형식의 손글씨 이미지.
 # filter : [filter_height, filter_width, in_channels, out_channels] 형식. 3, 3, 1, 32의 w.
 
 
-SIGMA = 0.05
-TIMESTEP = 0.01
+SIGMA = 10.
+TIMESTEP = 1e-2
+IS_TRAIN_MODEL = False
+IS_SAVEFIG = True
+batch_size = 32
+predictor_steps = 20
+corrector_steps = 20
+numberOfFiles = 1024
+output_dim = 1
+epochs = 30
 
 def get_rank(losses, training_loss):
     from copy import copy
@@ -53,7 +63,23 @@ def unit_test(name):
         tt = [t/100 for t in range(100)]
         ttt = [ marginal_prob_std(t) for t in tt]
         plt.plot(tt, ttt);plt.show()
-
+    if name == "pc_sampler":
+        eps = 1e-4
+        num_steps = 1000
+        time_steps = np.linspace(1., eps, num_steps)
+        time_step = time_steps[1]
+        step_size = time_steps[0] - time_steps[1]
+        grad = scorenet(x, time_steps[1])
+        grad_norm = tf.math.reduce_mean(tf.norm(tf.reshape(grad, (grad.shape[0], -1)), axis=-1))
+        noise_norm = np.sqrt(np.prod(x.shape[1:])) # 400
+        langevin_step_size = 2 * (snr * noise_norm / grad_norm)**2
+        x = x + langevin_step_size * grad + tf.sqrt(2*langevin_step_size) * tf.random.uniform(x.shape)
+        batch_time_step = tf.ones(batch_size) * time_step
+        def sigma_func(t):
+            return t ** 2
+        g = sigma_func(batch_time_step)
+        x_mean = x + (g**2) * scorenet(x, batch_time_step) * step_size
+        x = x_mean + tf.sqrt(g**2 * step_size)[None, None, None, :] * tf.random.uniform(x.shape)
 
 def loss_fn(model, x, marginal_prob_std, eps=1e-5): # ------------------ random t 를 사용??
     random_t = tf.random.uniform(shape=[]) * (1. - eps) + eps    
@@ -152,10 +178,6 @@ import os
 from PIL import Image
 # from ImageHandle import get_img_dataloader
 base_dir = "/Users/shareemotion/Projects/Solve_SDE/Data"
-batch_size = 32
-predictor_steps = 50 # 너무 노이즈를 많이 넣어도 학습이 안될 듯
-corrector_steps = 50
-numberOfFiles = 1024
 train_dir = os.path.join(base_dir,'train')
 test_dir = os.path.join(base_dir,'test1')
 file_names = os.listdir(train_dir)[:numberOfFiles]
@@ -210,102 +232,106 @@ class ImageDataset:
 
 dataset = ImageDataset(train_dir, file_names, batch_size=batch_size)
 
+if IS_TRAIN_MODEL is True:
+    # train scoreNet
+    train_loss = tf.keras.metrics.Mean()
+    random_t = tf.random.uniform(shape=[])
 
-# train scoreNet
+    x = keras.Input((400, 400, 1))
+    y = ScoreNet2D(x, random_t)
+    scorenet = keras.Model(inputs=x, outputs=y)
+    print(scorenet.summary())
 
-output_dim = 1
-epochs = 1000
-train_loss = tf.keras.metrics.Mean()
-random_t = tf.random.uniform(shape=[])
+    optimizer = Adam(learning_rate=1e-2)
+    losses = []
 
-x = keras.Input((400, 400, 1))
-y = ScoreNet2D(x, random_t)
-scorenet = keras.Model(inputs=x, outputs=y)
-print(scorenet.summary())
+    epoch = 0
+    while True:
+        num_items = 0
+        for i in trange(len(dataset)):        
+            x = dataset[i][0]
+            num_items += x.shape[0]
+            with tf.GradientTape() as tape:
+                loss = loss_fn(scorenet, x, marginal_prob_std=marginal_prob_std)
+                train_loss(loss)
+            grads = tape.gradient(loss, scorenet.trainable_variables)
+            optimizer.apply_gradients(zip(grads, scorenet.trainable_variables))
+        current_loss = train_loss.result() / num_items
+        losses.append(current_loss)
+        print(f"{epoch} : {current_loss}")
+        epoch += 1
 
-optimizer = Adam(learning_rate=1e-2)
-losses = []
+        if get_rank(losses, current_loss) > 2:
+            break;
+        if epoch > epochs:
+            break;
 
-epoch = 0
-while True:
-    num_items = 0
-    for i in trange(len(dataset)):        
-        x = dataset[i][0]
-        num_items += x.shape[0]
-        with tf.GradientTape() as tape:
-            loss = loss_fn(scorenet, x, marginal_prob_std=marginal_prob_std)
-            train_loss(loss)
-        grads = tape.gradient(loss, scorenet.trainable_variables)
-        optimizer.apply_gradients(zip(grads, scorenet.trainable_variables))
-    current_loss = train_loss.result() / num_items
-    losses.append(current_loss)
-    print(f"{epoch} : {current_loss}")
-    epoch += 1
-
-    if get_rank(losses, current_loss) > 2:
-        break;
-    if epoch > epochs:
-        break;
-
-
-pred = scorenet(x)
-
-# plt.subplot(1, 2, 1)
-# plt.imshow(x[0, :, :, 0])
-# plt.title('original')
-# plt.subplot(1, 2, 2)
-# plt.imshow(pred[0, :, :, 0])
-# plt.title('score')
-# plt.subplots_adjust(hspace=0.5)
-# plt.show()
+    pred = scorenet(x)
+    plt.subplot(1, 2, 1)
+    plt.imshow(x[0, :, :, 0])
+    plt.title('original')
+    plt.subplot(1, 2, 2)
+    plt.imshow(pred[0, :, :, 0])
+    plt.title('score')
+    plt.subplots_adjust(hspace=0.5)
+    plt.show(block=False)
+    plt.pause(1)
+    plt.close()
 
 
-# model save
-import time
-import math
-filename = 'tf_metal_model' + str(math.ceil(time.time()))
-model_path = os.getcwd() + '/' + filename
-scorenet.save(model_path)
+if IS_TRAIN_MODEL is False:
+    # # model load
+    scorenet = keras.models.load_model(os.getcwd() + '/tf_metal_model_1674783323')
+else:
+    # model save
+    filename = 'tf_metal_model_' + str(math.ceil(time.time()))
+    model_path = os.getcwd() + '/' + filename
+    scorenet.save(model_path)
+
+
+
+
 
 class VE_SDE:
     def __init__(self, n_batch, width, height, predictor_steps = 100, corrector_steps = 10, scoreNet = None):
         self.scoreNet = scoreNet
         self.predictor_steps = predictor_steps
-        self.corrector_steps = corrector_steps
-        self.drift_coef = self.drift_func
-        self.diffusion_coef = 0
+        self.corrector_steps = corrector_steps        
         self.n_batch = n_batch
         self.width = width
         self.height = height
-        self.epsilon = 1e-5
+        self.epsilon = 1e-5    
 
-    def sigma_func(self, t):
-        return t ** 2
+    def diffusion_coef(self, t, sigma=SIGMA):
+        return sigma ** t
+    
+    def run_pc_sampler(self, x, num_steps = 500, eps=1e-3, snr = 0.16):
+        time_steps = np.linspace(1., eps, num_steps)
+        step_size = time_steps[0] - time_steps[1]
+        
+        for i, time_step in enumerate(tqdm(time_steps)):
+            batch_time_step = tf.ones(batch_size) * time_step
 
-    def drift_func(self, t):
-        return tf.math.sqrt(2 * t) * tf.random.uniform(shape=[])
+            # corrector step (Langevin MCMC)
+            grad = self.scoreNet(x, time_step)
+            grad_norm = tf.math.reduce_mean(tf.norm(tf.reshape(grad, (grad.shape[0], -1)), axis=-1))
+            noise_norm = np.sqrt(np.prod(x.shape[1:])) # 400
+            langevin_step_size = 2 * (snr * noise_norm / grad_norm)**2
+            x = x + langevin_step_size * grad + tf.sqrt(2*langevin_step_size) * tf.random.uniform(x.shape)
 
-    def predictor(self, x, i):        
-        t = i * TIMESTEP
-        sigma_diff = (self.sigma_func(t + 1)**2 - self.sigma_func(t)**2)        
-        x_i_prime = x + sigma_diff * self.scoreNet(x, t)
-        z = tf.random.uniform(shape=[])
-        x = x_i_prime + tf.math.sqrt(sigma_diff) * z            
-        return x
-    def corrector(self, x, j):
-        t = (j + 1) * TIMESTEP
-        z = tf.random.uniform(shape=[])
-
-        x = x + self.epsilon * self.scoreNet(x, t) + tf.math.sqrt(tf.math.abs(2 * self.epsilon)) * z        
-        return x
-
-    def run_denoising(self, x):
-        for i in trange(self.predictor_steps -1, 0, -1):
-            x = self.predictor(x, i)
-            for j in range(0, self.corrector_steps, 1):
-                x = self.corrector(x, j)
-        return x
-
+            # predictor step (Euler-Maruyama)
+            g = self.diffusion_coef(batch_time_step)
+            x_mean = x + (g**2)[:, None, None, None] * scorenet(x, batch_time_step) * step_size
+            a = x_mean
+            b = tf.sqrt(g**2 * step_size)[:, None, None, None]
+            c = tf.random.uniform(x.shape)
+            x = tf.sqrt(g**2 * step_size)[:, None, None, None] * tf.random.uniform(x.shape)
+            plt.imshow(x[0, :, :, :])
+            plt.show(block=False)
+            plt.pause(0.1)
+            plt.close()
+        # The last step does not include any noise !!!!!!
+        return x_mean
 
 
 ve_model = VE_SDE(batch_size, 400, 400, scoreNet=scorenet, \
@@ -327,13 +353,18 @@ ve_model = VE_SDE(batch_size, 400, 400, scoreNet=scorenet, \
 # plt.imshow(denoised_x[0, 0, :, :].cpu().detach().numpy(), cmap='gray')
 # plt.show()
 
+original_path = os.getcwd()
+os.chdir(original_path + "/results")
 # 데이터의 가운데를 지우고 테스트 
-import copy
+
 offset = 50
 for x, y in dataset:
     x_cp = copy.copy(x)
     x_cp[:, (200-offset):(200+offset), (200-offset):(200+offset), :] = 0
-    denoising_x = ve_model.run_denoising(x_cp)
+    denoising_x = ve_model.run_pc_sampler(x_cp)
+
+    image_name = str(math.ceil(time.time())) + '.png'
+
     plt.subplot(1, 2, 1)
     plt.imshow(x[0, :, :, :])
     plt.title('original')
@@ -341,4 +372,10 @@ for x, y in dataset:
     plt.imshow(denoising_x[0, :, :, :])
     plt.title('denoised')
     plt.subplots_adjust(hspace=0.5)
-    plt.show()
+    plt.show(block=False)    
+    if IS_SAVEFIG is True:
+        plt.savefig(image_name)
+    plt.pause(1)
+    plt.close()
+
+os.chdir(original_path)
