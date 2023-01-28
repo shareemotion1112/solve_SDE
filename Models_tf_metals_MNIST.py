@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 from tensorflow.python import keras
 from keras.optimizers import Adam
 from keras.optimizers.schedules.learning_rate_schedule import ExponentialDecay
-from keras.models import Sequential
 from keras.layers import Conv2D, Conv2DTranspose, Dense
 from keras.losses import mse
 from tqdm import trange, tqdm
@@ -26,7 +25,7 @@ SIGMA = 25.
 IS_TRAIN_MODEL = True
 IS_SAVEFIG = False
 BATCH_SIZE = 32
-NUM_STEPS = 20
+NUM_STEPS = 200
 EPS = 1e-3
 LEARNING_RATE = 1e-1
 SNR = 0.16
@@ -74,12 +73,18 @@ def get_rank(losses, training_loss):
         rank = [1]
     return len(rank)
 
+def generate_random(shape, min = None, max = None, type = tf.float32):
+    seed = np.random.randint(0, 10000, 1)
+    if min is None:
+        return tf.random.uniform(shape, seed=seed)
+    else:
+        return tf.random.uniform(shape, minval=min, maxval=max, dtype=type, seed=seed)
 
 def GaussianFourierProjection(x, embed_dim=256, scale=30):
     # tensorflow에서는 Weight, bias를 임의로 변경하는 것이 어려운 듯
     # keras 패키지의 미리 만들어진 Weight를 사용    
     
-    W = tf.random.uniform((1, embed_dim // 2))
+    W = generate_random((1, embed_dim // 2))
     x_proj = 2.0 * np.pi * scale * x
     x_proj = W * x_proj
     x_proj_sin = tf.sin(x_proj)
@@ -93,39 +98,15 @@ def marginal_prob_std(t, sigma = SIGMA):
 
 
 
-def unit_test(name):
-    if name == 'marginal_prob_std':
-        # marginal probability test
-        tt = [t/100 for t in range(100)]
-        ttt = [ marginal_prob_std(t) for t in tt]
-        plt.plot(tt, ttt);plt.show()
-    if name == "pc_sampler":
-        eps = EPS
-        num_steps = 1000
-        time_steps = np.linspace(1., eps, num_steps)
-        time_step = time_steps[1]
-        step_size = time_steps[0] - time_steps[1]
-        grad = scorenet(x, time_steps[1])
-        grad_norm = tf.math.reduce_mean(tf.norm(tf.reshape(grad, (grad.shape[0], -1)), axis=-1))
-        noise_norm = np.sqrt(np.prod(x.shape[1:])) # 400
-        langevin_step_size = 2 * (SNR * noise_norm / grad_norm)**2
-        x = x + langevin_step_size * grad + tf.sqrt(2*langevin_step_size) * tf.random.uniform(x.shape)
-        batch_time_step = tf.ones(BATCH_SIZE) * time_step
-        def sigma_func(t):
-            return t ** 2
-        g = sigma_func(batch_time_step)
-        x_mean = x + (g**2) * scorenet(x, batch_time_step) * step_size
-        x = x_mean + tf.sqrt(g**2 * step_size)[None, None, None, :] * tf.random.uniform(x.shape)
-
 def loss_fn(model, x, marginal_prob_std, eps=EPS): # ------------------ random t 를 사용??
-    random_t = tf.random.uniform(shape=[]) * (1. - eps) + eps    
-    z = tf.random.uniform(shape=x.shape, minval=0, maxval=255, dtype=tf.int32)
+    random_t = generate_random([]) * (1. - eps) + eps
+    z = generate_random(x.shape, 0, 255, tf.int32)
     z = tf.cast(z, dtype=tf.float32)
     std = marginal_prob_std(random_t)
     perturbed_x = x + z * std
     score = model(perturbed_x, random_t)
     # print(f"score dimension : {score.shape}")
-    sum = tf.reduce_sum((score * std + z[:, :, :, None])**2)
+    sum = tf.reduce_sum((score * std + z[:, :, :, None])**2, axis=(1, 2, 3))
 
     loss = tf.reduce_mean(sum)
     return loss
@@ -214,7 +195,7 @@ def ScoreNet2D(x, t, channels=[32, 64, 128, 256]):
 if IS_TRAIN_MODEL is True:
     # train scoreNet
     train_loss = tf.keras.metrics.Mean()
-    random_t = tf.random.uniform(shape=[])
+    random_t = generate_random([])
 
     x = keras.Input((56, 56, 1))
     y = ScoreNet2D(x, random_t)
@@ -308,12 +289,12 @@ class VE_SDE:
             grad_norm = tf.math.reduce_mean(tf.norm(tf.reshape(grad, (grad.shape[0], -1)), axis=-1))
             noise_norm = np.sqrt(np.prod(x.shape[1:])) # 400
             langevin_step_size = 2 * (snr * noise_norm / grad_norm)**2
-            x = x + langevin_step_size * grad + tf.sqrt(2*langevin_step_size) * tf.random.uniform(x.shape)
+            x = x + langevin_step_size * grad + tf.sqrt(2*langevin_step_size) * generate_random(x.shape)
 
             # predictor step (Euler-Maruyama)
             g = self.diffusion_coef(batch_time_step)
             x_mean = x + (g**2)[:, None, None, None] * scorenet(x, batch_time_step) * step_size
-            x = x_mean + tf.sqrt(g**2 * step_size)[:, None, None, None] * tf.random.uniform(x.shape)
+            x = x_mean + tf.sqrt(g**2 * step_size)[:, None, None, None] * generate_random(x.shape)
             plt.imshow(x[0, :, :, :])
             plt.show(block=False)
             plt.pause(0.1)
