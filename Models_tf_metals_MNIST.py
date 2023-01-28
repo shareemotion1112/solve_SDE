@@ -20,7 +20,7 @@ import os
 
 
 SIGMA = 25.
-IS_TRAIN_MODEL = True
+IS_TRAIN_MODEL = False
 IS_SAVEFIG = False
 BATCH_SIZE = 32
 NUM_STEPS = 500
@@ -28,8 +28,8 @@ EPS = 1e-3
 LEARNING_RATE = 1e-2
 SNR = 0.16
 output_dim = 1
-epochs = 20
-n_images = 60000
+epochs = 10
+n_images = 30000
 
 data = tf.keras.datasets.mnist.load_data(path="mnist.npz")
 images = data[0][0][:n_images]
@@ -219,7 +219,7 @@ if IS_TRAIN_MODEL is True:
                 train_loss(loss)
             grads = tape.gradient(loss, scorenet.trainable_variables)
             optimizer.apply_gradients(zip(grads, scorenet.trainable_variables))
-        current_loss = train_loss.result() / num_items
+        current_loss = train_loss.result() / num_items * x.shape[0]
         losses.append(current_loss)
         print(f"{epoch} : {current_loss}")
         epoch += 1
@@ -301,7 +301,6 @@ class VE_SDE:
             noise_norm = np.sqrt(np.prod(x.shape[1:])) # 400
             langevin_step_size = 2 * (snr * noise_norm / grad_norm)**2
             x = x + langevin_step_size * grad + tf.sqrt(2*langevin_step_size) * generate_random(x.shape)
-            x_corrector = tf.identity(x)
             # predictor step (Euler -Maruyama)
             g = self.diffusion_coef(batch_time_step)
             x_mean = x + (g**2)[:, None, None, None] * scorenet(x, batch_time_step) * step_size
