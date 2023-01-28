@@ -27,17 +27,10 @@ IS_SAVEFIG = False
 BATCH_SIZE = 32
 NUM_STEPS = 200
 EPS = 1e-3
-LEARNING_RATE = 1e-1
+LEARNING_RATE = 1e-3
 SNR = 0.16
 output_dim = 1
 epochs = 20
-
-
-# base_dir = "/Users/shareemotion/Projects/Solve_SDE/Data"
-# train_dir = os.path.join(base_dir,'train')
-# test_dir = os.path.join(base_dir,'test1')
-# file_names = os.listdir(train_dir)[:numberOfFiles]
-
 
 data = tf.keras.datasets.mnist.load_data(path="mnist.npz")
 images = data[0][0]
@@ -65,11 +58,11 @@ dataset = ImageDataset(images, batch_size=BATCH_SIZE)
 
 # check dataset
 x = dataset[0]
-for i in range(x.shape[0]):
-    plt.imshow(x[i, :, :])
-    plt.show(block=False)
-    plt.pause(0.1)
-    plt.close()
+# for i in range(x.shape[0]):
+#     plt.imshow(x[i, :, :])
+#     plt.show(block=False)
+#     plt.pause(0.1)
+#     plt.close()
 
 
 
@@ -93,9 +86,9 @@ def GaussianFourierProjection(x, embed_dim=256, scale=30):
     # tensorflow에서는 Weight, bias를 임의로 변경하는 것이 어려운 듯
     # keras 패키지의 미리 만들어진 Weight를 사용    
     
-    W = generate_random((1, embed_dim // 2))
+    W = generate_random([embed_dim // 2])
     x_proj = 2.0 * np.pi * scale * x
-    x_proj = W * x_proj
+    x_proj = x_proj[:, None] * W[None, :]
     x_proj_sin = tf.sin(x_proj)
     x_proj_cos = tf.cos(x_proj)
 
@@ -108,11 +101,11 @@ def marginal_prob_std(t, sigma = SIGMA):
 
 
 def loss_fn(model, x, marginal_prob_std, eps=1e-5): # ------------------ random t 를 사용??
-    random_t = generate_random([]) * (1. - eps) + eps
+    random_t = generate_random([BATCH_SIZE]) * (1. - eps) + eps
     z = generate_random(x.shape, 0, 255, tf.int32)
     z = tf.cast(z, dtype=tf.float32)
     std = marginal_prob_std(random_t)
-    perturbed_x = x + z * std
+    perturbed_x = x + z * std[:, None, None]
     score = model(perturbed_x, random_t)
     # print(f"score dimension : {score.shape}")
     sum = tf.reduce_sum((score * std + z[:, :, :, None])**2, axis=(1, 2, 3))
@@ -158,43 +151,43 @@ class myGN(keras.Model):
         return self.gn(x)
 
 def ScoreNet2D(x, t, channels=[32, 64, 128, 256]):
+    # t는 batch size 크기의 배열
     x_embed = GaussianFourierProjection(t)
     embed = myDense(256)(x_embed)
 
     #encoding path
     h1 = myConv2D(channels[0], 3, 1, "same")(x)
-    # test = myDense(channels[0])(embed)[..., None, None] # test.shape == [1, 6, 1, 1]
-    h1 += myDense(channels[0])(embed)[None, None, ...]
+    h1 += myDense(channels[0])(embed)[:, None, None, :]
     h1 = myGN(channels[0])(h1)
     h1 = myAct()(h1)
     h2 = myConv2D(channels[1], 3, 2, "same")(h1)
-    h2 += myDense(channels[1])(embed)[None, None, ...]
+    h2 += myDense(channels[1])(embed)[:, None, None, :]
     h2 = myGN(channels[1])(h2)
     h2 = myAct()(h2)
     h3 = myConv2D(channels[2], 3, 2, padding="same")(h2)
-    h3 += myDense(channels[2])(embed)[None, None, ...]
+    h3 += myDense(channels[2])(embed)[:, None, None, :]
     h3 = myGN(channels[2])(h3)
     h3 = myAct()(h3)
     h4 = myConv2D(channels[3], 3, 2, "same")(h3)
-    h4 += myDense(channels[3])(embed)[None, None, ...]
+    h4 += myDense(channels[3])(embed)[:, None, None, :]
     h4 = myGN(channels[3])(h4)
     h4 = myAct()(h4)
 
     #decoding path
     h = myConv2DTrans(channels[2], 3, 2, "same")(h4)
-    h += myDense(channels[2])(embed)[None, None, ...]
+    h += myDense(channels[2])(embed)[:, None, None, :]
     h = myGN(channels[2])(h)
     h = myAct()(h)
     h = myConv2DTrans(channels[1], 3, 2, "same")(tf.concat([h, h3], axis=-1))
-    h += myDense(channels[1])(embed)[None, None, ...]
+    h += myDense(channels[1])(embed)[:, None, None, :]
     h = myGN(channels[1])(h)
     h = myConv2DTrans(channels[0], 3, 2, "same")(tf.concat([h, h2], axis=-1))
-    h += myDense(channels[0])(embed)[None, None, ...]
+    h += myDense(channels[0])(embed)[:, None, None, :]
     h = myGN(channels[0])(h)
     h = myAct()(h)
     h = myConv2DTrans(1, 3, 1, "same")(tf.concat([h, h1], axis=-1))
     denominator = marginal_prob_std(t)
-    out = h / denominator
+    out = h / denominator[:, None, None, None]
     return out
 
 
@@ -204,7 +197,7 @@ def ScoreNet2D(x, t, channels=[32, 64, 128, 256]):
 if IS_TRAIN_MODEL is True:
     # train scoreNet
     train_loss = tf.keras.metrics.Mean()
-    random_t = generate_random([])
+    random_t = generate_random([BATCH_SIZE])
 
     x = keras.Input((56, 56, 1))
     y = ScoreNet2D(x, random_t)
@@ -295,17 +288,24 @@ class VE_SDE:
             batch_time_step = tf.ones(self.n_batch) * time_step
 
             # corrector step (Langevin MCMC)
-            grad = self.scoreNet(x, time_step)
+            grad = self.scoreNet(x, batch_time_step)
+            a = tf.reshape(grad, (grad.shape[0], -1))
+            b = tf.norm(tf.reshape(grad, (grad.shape[0], -1)), axis=0)
             grad_norm = tf.math.reduce_mean(tf.norm(tf.reshape(grad, (grad.shape[0], -1)), axis=-1))
             noise_norm = np.sqrt(np.prod(x.shape[1:])) # 400
             langevin_step_size = 2 * (snr * noise_norm / grad_norm)**2
-            x = x + langevin_step_size * grad + tf.sqrt(2*langevin_step_size) * generate_random(x.shape)
-
-            # predictor step (Euler-Maruyama)
+            x = x + langevin_step_size * grad + tf.sqrt(2*langevin_step_size) * generate_random([x.shape])
+            x_corrector = tf.identity(x)
+            # predictor step (Euler -Maruyama)
             g = self.diffusion_coef(batch_time_step)
             x_mean = x + (g**2)[:, None, None, None] * scorenet(x, batch_time_step) * step_size
-            x = x_mean + tf.sqrt(g**2 * step_size)[:, None, None, None] * generate_random(x.shape)
+            x = x_mean + tf.sqrt(g**2 * step_size)[:, None, None, None] * generate_random([x.shape])
+            plt.subplot(1, 2, 1)
+            plt.imshow(x_corrector[0, :, :, :])
+            plt.title('corrector')
+            plt.subplot(1, 2, 2)
             plt.imshow(x[0, :, :, :])
+            plt.title('predictor')
             plt.show(block=False)
             plt.pause(0.1)
             plt.close()
@@ -335,7 +335,7 @@ original_path = os.getcwd()
 os.chdir(original_path + "/results")
 # 데이터의 가운데를 지우고 테스트 
 
-offset = 2
+offset = 10
 for x in dataset:
     x_cp = copy.copy(x)
     x_cp[:, (56-offset):(56+offset), (56-offset):(56+offset)] = 0
@@ -343,10 +343,13 @@ for x in dataset:
 
     image_name = str(math.ceil(time.time())) + '.png'
 
-    plt.subplot(1, 2, 1)
+    plt.subplot(1, 3, 1)
     plt.imshow(x[0, :, :])
     plt.title('original')
-    plt.subplot(1, 2, 2)
+    plt.subplot(1, 3, 2)
+    plt.imshow(x_cp[0, :, :])
+    plt.title('cropped')
+    plt.subplot(1, 3, 3)
     plt.imshow(denoising_x[0, :, :])
     plt.title('denoised')
     plt.subplots_adjust(hspace=0.5)
