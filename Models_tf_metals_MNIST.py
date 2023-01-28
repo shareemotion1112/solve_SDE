@@ -53,7 +53,7 @@ class ImageDataset:
     def __getitem__(self, idx):
         res_im = None        
         for i in range(idx * self.batch_size, (idx + 1) * self.batch_size, 1):
-            im = np.array(self.images[idx, :, :])
+            im = np.array(self.images[i, :, :])
             im_upsampling = im.repeat(2, axis=0).repeat(2, axis=1)
             if res_im is None:
                 res_im = im_upsampling[None, :, :]
@@ -62,6 +62,15 @@ class ImageDataset:
         return res_im
 
 dataset = ImageDataset(images, batch_size=BATCH_SIZE)
+
+# check dataset
+x = dataset[0]
+for i in range(x.shape[0]):
+    plt.imshow(x[i, :, :])
+    plt.show(block=False)
+    plt.pause(0.1)
+    plt.close()
+
 
 
 def get_rank(losses, training_loss):
@@ -98,7 +107,7 @@ def marginal_prob_std(t, sigma = SIGMA):
 
 
 
-def loss_fn(model, x, marginal_prob_std, eps=EPS): # ------------------ random t 를 사용??
+def loss_fn(model, x, marginal_prob_std, eps=1e-5): # ------------------ random t 를 사용??
     random_t = generate_random([]) * (1. - eps) + eps
     z = generate_random(x.shape, 0, 255, tf.int32)
     z = tf.cast(z, dtype=tf.float32)
@@ -233,16 +242,17 @@ if IS_TRAIN_MODEL is True:
     scorenet.save(model_path)
 
     pred = scorenet(x)
-    plt.subplot(1, 2, 1)
-    plt.imshow(x[0, :, :])
-    plt.title('original')
-    plt.subplot(1, 2, 2)
-    plt.imshow(pred[0, :, :, 0])
-    plt.title('score')
-    plt.subplots_adjust(hspace=0.5)
-    plt.show(block=False)
-    plt.pause(1)
-    plt.close()
+    for i in range(BATCH_SIZE):
+        plt.subplot(1, 2, 1)
+        plt.imshow(x[i, :, :])
+        plt.title('original')
+        plt.subplot(1, 2, 2)
+        plt.imshow(pred[i, :, :, 0])
+        plt.title('score')
+        plt.subplots_adjust(hspace=0.5)
+        plt.show(block=False)
+        plt.pause(1)
+        plt.close()
 
 
 if IS_TRAIN_MODEL is False:
@@ -325,10 +335,10 @@ original_path = os.getcwd()
 os.chdir(original_path + "/results")
 # 데이터의 가운데를 지우고 테스트 
 
-offset = 50
+offset = 2
 for x in dataset:
     x_cp = copy.copy(x)
-    x_cp[:, (200-offset):(200+offset), (200-offset):(200+offset)] = 0
+    x_cp[:, (56-offset):(56+offset), (56-offset):(56+offset)] = 0
     denoising_x = ve_model.run_pc_sampler(x_cp[:, :, :, None])
 
     image_name = str(math.ceil(time.time())) + '.png'
