@@ -88,8 +88,6 @@ def GaussianFourierProjection(t, embed_dim=256, scale=30):
     W = generate_random([embed_dim // 2])
     x_proj = 2.0 * np.pi * scale * t
     x_proj = x_proj[:, None] * W[None, :]
-    a = (x_proj[0, 1])
-    b = (x_proj[0, 2])
     x_proj_sin = tf.sin(x_proj)
     x_proj_cos = tf.cos(x_proj)
 

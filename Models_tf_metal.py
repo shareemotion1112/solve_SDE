@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tensorflow.python import keras
 from keras.optimizers import Adam
-from keras.models import Sequential
+from keras.optimizers.schedules.learning_rate_schedule import ExponentialDecay
 from keras.layers import Conv2D, Conv2DTranspose, Dense
 from keras.losses import mse
 from tqdm import trange, tqdm
@@ -48,6 +48,25 @@ def get_rank(losses, training_loss):
     return len(rank)
 
 
+def generate_random(shape, min = None, max = None, type = tf.float32):
+    seed = np.random.randint(0, 10000, 1)
+    if min is None:
+        return tf.random.uniform(shape, seed=seed)
+    else:
+        return tf.random.uniform(shape, minval=min, maxval=max, dtype=type, seed=seed)
+
+
+def plot_imgs(x):
+    n_images = x.shape[0]
+    n_row = int(np.ceil(np.sqrt(n_images)))
+    n_col = int(n_row + 1)
+    for i in range(1, n_images):
+        plt.subplot(n_row, n_col, i)
+        plt.imshow(x[i, :, :, :])        
+        plt.axis('off')    
+    plt.subplots_adjust(hspace=0)
+    plt.show(block=False)
+
 def GaussianFourierProjection(x, embed_dim=256, scale=30):
     # tensorflow에서는 Weight, bias를 임의로 변경하는 것이 어려운 듯
     # keras 패키지의 미리 만들어진 Weight를 사용    
@@ -66,39 +85,16 @@ def marginal_prob_std(t, sigma = SIGMA):
 
 
 
-def unit_test(name):
-    if name == 'marginal_prob_std':
-        # marginal probability test
-        tt = [t/100 for t in range(100)]
-        ttt = [ marginal_prob_std(t) for t in tt]
-        plt.plot(tt, ttt);plt.show()
-    if name == "pc_sampler":
-        eps = EPS
-        num_steps = 1000
-        time_steps = np.linspace(1., eps, num_steps)
-        time_step = time_steps[1]
-        step_size = time_steps[0] - time_steps[1]
-        grad = scorenet(x, time_steps[1])
-        grad_norm = tf.math.reduce_mean(tf.norm(tf.reshape(grad, (grad.shape[0], -1)), axis=-1))
-        noise_norm = np.sqrt(np.prod(x.shape[1:])) # 400
-        langevin_step_size = 2 * (snr * noise_norm / grad_norm)**2
-        x = x + langevin_step_size * grad + tf.sqrt(2*langevin_step_size) * tf.random.uniform(x.shape)
-        batch_time_step = tf.ones(BATCH_SIZE) * time_step
-        def sigma_func(t):
-            return t ** 2
-        g = sigma_func(batch_time_step)
-        x_mean = x + (g**2) * scorenet(x, batch_time_step) * step_size
-        x = x_mean + tf.sqrt(g**2 * step_size)[None, None, None, :] * tf.random.uniform(x.shape)
-
 def loss_fn(model, x, marginal_prob_std, eps=EPS): # ------------------ random t 를 사용??
-    random_t = tf.random.uniform(shape=[]) * (1. - eps) + eps    
-    z = tf.random.uniform(shape=x.shape, minval=0, maxval=255, dtype=tf.int32)
+    random_t = tf.random.uniform([BATCH_SIZE]) * (1. - eps) + eps    
+    z = generate_random(x.shape) # z : 0 ~ 255까지의 크기인줄 알았는데 0~1사이 숫자임
     z = tf.cast(z, dtype=tf.float32)
     std = marginal_prob_std(random_t)
-    perturbed_x = x + z * std
-    score = model(perturbed_x, random_t)
-    # print(f"score dimension : {score.shape}")
-    sum = tf.reduce_sum((score * std + z)**2)
+
+    perturbed_x = x + z * std[:, None, None]
+    
+    score = model(perturbed_x, random_t)    
+    sum = tf.reduce_sum((score * std + z[:, :, :, None])**2, axis=(1, 2, 3))
 
     loss = tf.reduce_mean(sum)
     return loss
@@ -111,7 +107,7 @@ class myDense(keras.Model):
         return self.dense(x)
 
 class myConv2DTrans(keras.Model):
-    def __init__(self, prev_x_dim, kernel_size, strides, padding="valid"):
+    def __init__(self, prev_x_dim, kernel_size, strides, padding):
         super(myConv2DTrans, self).__init__()
         self.convt = Conv2DTranspose(prev_x_dim, kernel_size=kernel_size, strides=strides, use_bias=False, padding=padding)
     def call(self, x):
@@ -119,7 +115,7 @@ class myConv2DTrans(keras.Model):
         return x
 
 class myConv2D(keras.Model):
-    def __init__(self, output_dim, kernel_size, strides, padding="same"):
+    def __init__(self, output_dim, kernel_size, strides, padding):
         super(myConv2D, self).__init__()
         self.conv2d = Conv2D(output_dim, kernel_size=kernel_size, strides=strides, padding=padding, use_bias=False, name="conv2d")
     def call(self, x):
@@ -145,39 +141,38 @@ def ScoreNet2D(x, t, channels=[6, 12, 24, 48]):
     embed = myDense(256)(x_embed)
 
     #encoding path
-    h1 = myConv2D(channels[0], 3, 1)(x)
-    # test = myDense(channels[0])(embed)[..., None, None] # test.shape == [1, 6, 1, 1]
-    h1 += myDense(channels[0])(embed)[None, None, ...]
-    h1 = myGN(h1.shape[3])(h1)
+    h1 = myConv2D(channels[0], 3, 1, "same")(x)
+    h1 += myDense(channels[0])(embed)[:, None, None, :]
+    h1 = myGN(channels[0])(h1)
     h1 = myAct()(h1)
-    h2 = myConv2D(channels[1], 3, 2)(h1)
-    h2 += myDense(channels[1])(embed)[None, None, ...]
-    h2 = myGN(h1.shape[3])(h2)
+    h2 = myConv2D(channels[1], 3, 2, "same")(h1)
+    h2 += myDense(channels[1])(embed)[:, None, None, :]
+    h2 = myGN(channels[1])(h2)
     h2 = myAct()(h2)
-    h3 = myConv2D(channels[2], 3, 2)(h2)
-    h3 += myDense(channels[2])(embed)[None, None, ...]
-    h3 = myGN(h2.shape[3])(h3)
+    h3 = myConv2D(channels[2], 3, 2, padding="same")(h2)
+    h3 += myDense(channels[2])(embed)[:, None, None, :]
+    h3 = myGN(channels[2])(h3)
     h3 = myAct()(h3)
-    h4 = myConv2D(channels[3], 3, 2)(h3)
-    h4 += myDense(channels[3])(embed)[None, None, ...]
-    h4 = myGN(h3.shape[3])(h4)
+    h4 = myConv2D(channels[3], 3, 2, "same")(h3)
+    h4 += myDense(channels[3])(embed)[:, None, None, :]
+    h4 = myGN(channels[3])(h4)
     h4 = myAct()(h4)
 
     #decoding path
-    h = myConv2DTrans(channels[2], 2, 2)(h4)
-    h += myDense(channels[2])(embed)[None, None, ...]
+    h = myConv2DTrans(channels[2], 3, 2, "same")(h4)
+    h += myDense(channels[2])(embed)[:, None, None, :]
     h = myGN(channels[2])(h)
     h = myAct()(h)
-    h = myConv2DTrans(channels[1], 2, 2)(tf.concat([h, h3], axis=-1))
-    h += myDense(channels[1])(embed)[None, None, ...]
+    h = myConv2DTrans(channels[1], 3, 2, "same")(tf.concat([h, h3], axis=-1))
+    h += myDense(channels[1])(embed)[:, None, None, :]
     h = myGN(channels[1])(h)
-    h = myConv2DTrans(channels[0], 2, 2)(tf.concat([h, h2], axis=-1))
-    h += myDense(channels[0])(embed)[None, None, ...]
+    h = myConv2DTrans(channels[0], 3, 2, "same")(tf.concat([h, h2], axis=-1))
+    h += myDense(channels[0])(embed)[:, None, None, :]
     h = myGN(channels[0])(h)
     h = myAct()(h)
-    h = myConv2DTrans(1, 2, 1, "same")(tf.concat([h, h1], axis=-1))
+    h = myConv2DTrans(1, 3, 1, "same")(tf.concat([h, h1], axis=-1))
     denominator = marginal_prob_std(t)
-    out = h / denominator
+    out = h / denominator[:, None, None, None]
     return out
 
 
@@ -234,7 +229,7 @@ dataset = ImageDataset(train_dir, file_names, batch_size=BATCH_SIZE)
 if IS_TRAIN_MODEL is True:
     # train scoreNet
     train_loss = tf.keras.metrics.Mean()
-    random_t = tf.random.uniform(shape=[])
+    random_t = tf.ones(BATCH_SIZE) * generate_random([])
 
     x = keras.Input((400, 400, 1))
     y = ScoreNet2D(x, random_t)
@@ -243,10 +238,12 @@ if IS_TRAIN_MODEL is True:
 
     optimizer = Adam(learning_rate=LEARNING_RATE)
     losses = []
+    lr_schedule = ExponentialDecay(LEARNING_RATE, 200,.9)
 
     epoch = 0
     while True:
         num_items = 0
+        optimizer.learning_rate = lr_schedule(epoch)
         for i in trange(len(dataset)):        
             x = dataset[i][0]
             num_items += x.shape[0]
@@ -255,7 +252,7 @@ if IS_TRAIN_MODEL is True:
                 train_loss(loss)
             grads = tape.gradient(loss, scorenet.trainable_variables)
             optimizer.apply_gradients(zip(grads, scorenet.trainable_variables))
-        current_loss = train_loss.result() / num_items
+        current_loss = train_loss.result() / num_items * x.shape[0]
         losses.append(current_loss)
         print(f"{epoch} : {current_loss}")
         epoch += 1
@@ -266,26 +263,37 @@ if IS_TRAIN_MODEL is True:
             break;
 
     pred = scorenet(x)
-    plt.subplot(1, 2, 1)
-    plt.imshow(x[0, :, :, 0])
-    plt.title('original')
-    plt.subplot(1, 2, 2)
-    plt.imshow(pred[0, :, :, 0])
-    plt.title('score')
-    plt.subplots_adjust(hspace=0.5)
-    plt.show(block=False)
-    plt.pause(1)
-    plt.close()
+    for i in range(BATCH_SIZE):
+        plt.subplot(1, 2, 1)
+        plt.imshow(x[i, :, :])
+        plt.title('original')
+        plt.subplot(1, 2, 2)
+        plt.imshow(pred[i, :, :, 0])
+        plt.title('score')
+        plt.subplots_adjust(hspace=0.5)
+        plt.show(block=False)
+        plt.pause(0.1)
+        plt.close()
 
 
-if IS_TRAIN_MODEL is False:
-    # # model load
-    scorenet = keras.models.load_model(os.getcwd() + '/tf_metal_model_1674783323')
 else:
-    # model save
-    filename = 'tf_metal_model_' + str(math.ceil(time.time()))
-    model_path = os.getcwd() + '/' + filename
-    scorenet.save(model_path)
+    # # model load
+    files = os.listdir()    
+    import re
+    folders = []
+    for file in files:
+        if re.search('tf_metal_model', file) is not None:
+            folders.append(file)
+    dates = []
+    for folder in folders:
+        ll = folder.split('_')
+        date = ll[len(ll)-1]
+        dates.append(date)
+    max_ind = np.argmax(np.array(dates))
+    max_folder = folders[max_ind]
+
+    model_path = os.getcwd() + '/' + max_folder
+    scorenet = keras.models.load_model(model_path)
 
 
 
@@ -309,65 +317,56 @@ class VE_SDE:
             batch_time_step = tf.ones(self.n_batch) * time_step
 
             # corrector step (Langevin MCMC)
-            grad = self.scoreNet(x, time_step)
+            grad = self.scoreNet(x, batch_time_step)
             grad_norm = tf.math.reduce_mean(tf.norm(tf.reshape(grad, (grad.shape[0], -1)), axis=-1))
             noise_norm = np.sqrt(np.prod(x.shape[1:])) # 400
             langevin_step_size = 2 * (snr * noise_norm / grad_norm)**2
-            x = x + langevin_step_size * grad + tf.sqrt(2*langevin_step_size) * tf.random.uniform(x.shape)
+            x = x + langevin_step_size * grad + tf.sqrt(2*langevin_step_size) * generate_random(x.shape)
 
             # predictor step (Euler-Maruyama)
             g = self.diffusion_coef(batch_time_step)
             x_mean = x + (g**2)[:, None, None, None] * scorenet(x, batch_time_step) * step_size
-            x = x_mean + tf.sqrt(g**2 * step_size)[:, None, None, None] * tf.random.uniform(x.shape)
-            plt.imshow(x[0, :, :, :])
-            plt.show(block=False)
-            plt.pause(0.1)
-            plt.close()
+            x = x_mean + tf.sqrt(g**2 * step_size)[:, None, None, None] * generate_random(x.shape)
+            if i % 10 == 0:
+                plot_imgs(x)
+                plt.pause(0.1)
+                plt.close()   
         # The last step does not include any noise !!!!!!
         return x_mean
 
 
 ve_model = VE_SDE(BATCH_SIZE, 400, 400, scoreNet=scorenet)
-# for x, y in data_loader:
-#     denoising_x = ve_model.run_denoising(x)
-#     pp("denoising x : {denoising_x.shape}")
-#     plot(x, scoreNet(x, 1), denoising_x)
-    # predictor_x = ve_model.run_predictor_only(x)
-    # plot(x, scoreNet(x, 1), predictor_x, denoising_x)
 
-# # random matrix check : 아예 random한 데이터는 어려운 듯    
-# x = torch.abs(torch.randn((1, 1, 400, 400)))
-# for i in range(1000):
-#     denoised_x = ve_model.run_denoising(x)        
-#     x = denoised_x
-#     plot(scoreNet(x, 1), denoised_x)
-# import matplotlib.pyplot as plt
-# plt.imshow(denoised_x[0, 0, :, :].cpu().detach().numpy(), cmap='gray')
-# plt.show()
 
-original_path = os.getcwd()
-os.chdir(original_path + "/results")
-# 데이터의 가운데를 지우고 테스트 
+t = tf.ones(BATCH_SIZE) # initial time이라 1을 넣는가봄
+std = marginal_prob_std(t)[:, None, None, None]
+x = tf.random.uniform((32, 400, 400, 1), seed=np.random.randint(0, 10000)) * std
 
-offset = 50
-for x, y in dataset:
-    x_cp = copy.copy(x)
-    x_cp[:, (200-offset):(200+offset), (200-offset):(200+offset), :] = 0
-    denoising_x = ve_model.run_pc_sampler(x_cp)
+denoised_x = ve_model.run_pc_sampler(x)
+plot_imgs(denoised_x)
 
-    image_name = str(math.ceil(time.time())) + '.png'
 
-    plt.subplot(1, 2, 1)
-    plt.imshow(x[0, :, :, :])
-    plt.title('original')
-    plt.subplot(1, 2, 2)
-    plt.imshow(denoising_x[0, :, :, :])
-    plt.title('denoised')
-    plt.subplots_adjust(hspace=0.5)
-    plt.show(block=False)    
-    if IS_SAVEFIG is True:
-        plt.savefig(image_name)
-    plt.pause(1)
-    plt.close()
+# # 데이터의 가운데를 지우고 테스트 
+# original_path = os.getcwd()
+# os.chdir(original_path + "/results")
+# offset = 50
+# for x, y in dataset:
+#     x_cp = copy.copy(x)
+#     x_cp[:, (200-offset):(200+offset), (200-offset):(200+offset), :] = 0
+#     denoising_x = ve_model.run_pc_sampler(x_cp)
 
-os.chdir(original_path)
+#     image_name = str(math.ceil(time.time())) + '.png'
+
+#     plt.subplot(1, 2, 1)
+#     plt.imshow(x[0, :, :, :])
+#     plt.title('original')
+#     plt.subplot(1, 2, 2)
+#     plt.imshow(denoising_x[0, :, :, :])
+#     plt.title('denoised')
+#     plt.subplots_adjust(hspace=0.5)
+#     plt.show(block=False)    
+#     if IS_SAVEFIG is True:
+#         plt.savefig(image_name)
+#     plt.pause(1)
+#     plt.close()
+# os.chdir(original_path)
