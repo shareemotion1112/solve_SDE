@@ -18,23 +18,15 @@ BATCH_SIZE = 32
 
 class GaussianFourierProjection(nn.Module):
   """Gaussian random features for encoding time steps."""  
-  def __init__(self, scale=30.):
+  def __init__(self, embed_dim, scale=30.):
     super().__init__()
-    self.W = None
-    self.scale = 30
-  def forward(self, x):
-    """
-    x : [n_batch, n_channel, width, height]
-    """        
-    x = x.to(DEVICE)
-    self.W = nn.Parameter(torch.randn(x.shape[2], x.shape[3]) * self.scale, requires_grad=False).to(DEVICE)
-    x_proj = torch.zeros(x.shape[0], x.shape[1] * 2, x.shape[2], x.shape[3]).to(DEVICE)
-    for i in range(x.shape[0]):
-        for j in range(x.shape[1]):
-            tmp = x[i, j, :, :] * self.W * 2 * np.pi
-            m_cat = torch.cat((torch.sin(tmp)[None, :, :], torch.cos(tmp)[None, :, :]), dim=0)
-            x_proj[i, j:(j+2), :, :] = m_cat
-    return x_proj
+    # Randomly sample weights during initialization. These weights are fixed 
+    # during optimization and are not trainable.
+    self.W = nn.Parameter(torch.randn(embed_dim // 2) * scale, requires_grad=False)
+  def forward(self, t):
+    x_proj = t[:, None] * self.W[None, :] * 2 * np.pi
+    return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
+
 
 def marginal_prob_std(t, sigma = SIGMA):
     if type(t) != torch.TensorType:
@@ -71,96 +63,100 @@ https://blog.lunit.io/2018/04/12/group-normalization/
 ConvTranspose2d : https://cumulu-s.tistory.com/29
 
 """
-
-
-class DownSample(nn.Module):
+class Dense(nn.Module):
     def __init__(self, input_dim, output_dim):
-        super(DownSample, self).__init__()
-        self.conv = nn.Conv2d(input_dim, output_dim, kernel_size=3, stride=1, padding=1).to(DEVICE)
-        self.gn = nn.GroupNorm(output_dim, output_dim).to(DEVICE)
-        self.relu = nn.ReLU().to(DEVICE)
-        self.pool = nn.MaxPool2d(kernel_size=2).to(DEVICE)
+        super().__init__()
+        self.dense = nn.Linear(input_dim, output_dim)
     def forward(self, x):
-        a = x.device
-        x = self.conv(x)
-        x = self.gn(x)
-        x = self.relu(x)
-        x = self.pool(x)
-        return x
+        return self.dense(x)[..., None, None]
 
-class UpSample(nn.Module):
-    """
-    두배로 늘어난 채널을 다시 반으로 감소 시켜야함
-    """
-    def __init__(self):
-        super(UpSample, self).__init__()
-        self.input_dim = 12
-        self.gn = None
 
-    def tconv(self, n_ch):
-        return nn.ConvTranspose2d(n_ch, n_ch, kernel_size=2, stride=2, padding=0).to(DEVICE)
+class ScoreNet(nn.Module):
+    def __init__(self, marginal_prob_std, channels=[32, 64, 128, 256], embed_dim=256):
+        """Initialize a time-dependent score-based network.
 
-    def conv(self, n_ch):
-        return nn.Conv2d(n_ch, n_ch // 2, kernel_size=3, stride=1, padding=1).to(DEVICE)
+        Args:
+        marginal_prob_std: A function that takes time t and gives the standard
+            deviation of the perturbation kernel p_{0t}(x(t) | x(0)).
+        channels: The number of channels for feature maps of each resolution.
+        embed_dim: The dimensionality of Gaussian random feature embeddings.
+        """
+        super().__init__()
+        # Gaussian random feature embedding layer for time
+        self.embed = nn.Sequential(GaussianFourierProjection(embed_dim=embed_dim),
+            nn.Linear(embed_dim, embed_dim))
+        # Encoding layers where the resolution decreases
+        self.conv1 = nn.Conv2d(1, channels[0], 3, stride=1, bias=False, padding=1)
+        self.dense1 = Dense(embed_dim, channels[0])
+        self.gnorm1 = nn.GroupNorm(4, num_channels=channels[0])
+        self.conv2 = nn.Conv2d(channels[0], channels[1], 3, stride=2, bias=False, padding=1)
+        self.dense2 = Dense(embed_dim, channels[1])
+        self.gnorm2 = nn.GroupNorm(32, num_channels=channels[1])
+        self.conv3 = nn.Conv2d(channels[1], channels[2], 3, stride=2, bias=False, padding=1)
+        self.dense3 = Dense(embed_dim, channels[2])
+        self.gnorm3 = nn.GroupNorm(32, num_channels=channels[2])
+        self.conv4 = nn.Conv2d(channels[2], channels[3], 3, stride=2, bias=False, padding=1)
+        self.dense4 = Dense(embed_dim, channels[3])
+        self.gnorm4 = nn.GroupNorm(32, num_channels=channels[3])    
+
+        # Decoding layers where the resolution increases
+        self.tconv4 = nn.ConvTranspose2d(channels[3], channels[2], 2, stride=2, bias=False, output_padding=0)
+        self.dense5 = Dense(embed_dim, channels[2])
+        self.tgnorm4 = nn.GroupNorm(32, num_channels=channels[2])
+        self.tconv3 = nn.ConvTranspose2d(channels[2] + channels[2], channels[1], 2, stride=2, bias=False, output_padding=0)    
+        self.dense6 = Dense(embed_dim, channels[1])
+        self.tgnorm3 = nn.GroupNorm(32, num_channels=channels[1])
+        self.tconv2 = nn.ConvTranspose2d(channels[1] + channels[1], channels[0], 2, stride=2, bias=False, output_padding=0)    
+        self.dense7 = Dense(embed_dim, channels[0])
+        self.tgnorm2 = nn.GroupNorm(32, num_channels=channels[0])
+        self.tconv1 = nn.ConvTranspose2d(channels[0] + channels[0], 1, 1, stride=1, output_padding=0)
         
-    def forward(self, previous_x, x):
-        x = self.conv(x.shape[1])(x)
-        pp(f"shape check : {previous_x.shape} vs {x.shape}")
-        x = torch.cat([previous_x, x], dim=1); pp(f"x : {x.shape}")        
-        x = self.conv(x.shape[1])(x)
-        x = self.tconv(x.shape[1])(x, output_size=(previous_x.shape[2] * 2, previous_x.shape[3] * 2))
-        groupNorm = nn.GroupNorm(x.shape[1], x.shape[1]).to(DEVICE)
-        x = groupNorm(x)
-        return x    
-
-class ScoreNet2D(nn.Module):
-    def __init__(self, n_batch, n_channel, width, height, channels=[6, 12, 24, 48]):
-        super(ScoreNet2D, self).__init__()
-        
-        self.n_batch = n_batch
-        self.n_channel = n_channel
-        self.width = width
-        self.height = height
-        self.channels = channels
-        
-        self.embed = GaussianFourierProjection()
-
-        self.down2 = DownSample(channels[0], channels[1])
-        self.bottom = DownSample(channels[1], channels[2])
-
-        self.up1 = UpSample()
-        self.up2 = UpSample()
-
-        self.dense1_input_size = 1        
-        self.dense1 = nn.Linear(self.dense1_input_size, n_batch * n_channel * width * height)
-
+        # The swish activation function
         self.act = lambda x: x * torch.sigmoid(x)
         self.marginal_prob_std = marginal_prob_std
+  
+    def forward(self, x, t): 
+        # Obtain the Gaussian random feature embedding for t   
+        embed = self.act(self.embed(t))    
+        # Encoding path
+        h1 = self.conv1(x)    
+        ## Incorporate information from t
+        h1 += self.dense1(embed)
+        ## Group normalization
+        h1 = self.gnorm1(h1)
+        h1 = self.act(h1)
+        h2 = self.conv2(h1)
+        h2 += self.dense2(embed)
+        h2 = self.gnorm2(h2)
+        h2 = self.act(h2)
+        h3 = self.conv3(h2)
+        h3 += self.dense3(embed)
+        h3 = self.gnorm3(h3)
+        h3 = self.act(h3)
+        h4 = self.conv4(h3)
+        h4 += self.dense4(embed)
+        h4 = self.gnorm4(h4)
+        h4 = self.act(h4)
 
+        # Decoding path
+        h = self.tconv4(h4)
+        ## Skip connection from the encoding path
+        h += self.dense5(embed)
+        h = self.tgnorm4(h)
+        h = self.act(h)
+        h = self.tconv3(torch.cat([h, h3], dim=1))
+        h += self.dense6(embed)
+        h = self.tgnorm3(h)
+        h = self.act(h)
+        h = self.tconv2(torch.cat([h, h2], dim=1))
+        h += self.dense7(embed)
+        h = self.tgnorm2(h)
+        h = self.act(h)
+        h = self.tconv1(torch.cat([h, h1], dim=1))
 
-    def forward(self, x, t): # t는 loss_fn에 정의된 random_t가 들어감
-        if type(x) == np.ndarray:
-            x = convert_to_torch_tensor(x)
-        x_embed = self.embed(x)
-
-        self.down1 = DownSample(x_embed.shape[1], self.channels[0])
-
-        x_down1 = self.down1(x_embed) 
-        x_down2 = self.down2(x_down1) 
-
-        x_bottom = self.bottom(x_down2)
-        btm = nn.ConvTranspose2d(x_bottom.shape[1], x_bottom.shape[1], kernel_size=2, stride=2, padding=0).to(DEVICE)
-        x_bottom = btm(x_bottom)
-
-        x_up1 = self.up1(x_down2, x_bottom)
-        x_up2 = self.up2(x_down1, x_up1)
-        nnConv2d = nn.Conv2d(x_up2.shape[1], self.n_channel, kernel_size=1, stride=1, padding=0).to(DEVICE)
-        x = nnConv2d(x_up2)
-        x_act = self.act(x)
-
-        denominator = marginal_prob_std(t)[:, None, None, None]
-        x = x_act / denominator        
-        return x 
+        # Normalize output
+        h = h / self.marginal_prob_std(t)[:, None, None, None]
+        return h
 
 
 class VE_SDE:
@@ -184,7 +180,7 @@ class VE_SDE:
             # corrector step (Langevin MCMC)
             grad = self.scoreNet(x, batch_time_step)            
             grad_norm = torch.norm(grad.reshape(grad.shape[0], -1), dim=-1).mean()
-            noise_norm = np.sqrt(np.prod(x.shape[1:])) # 400
+            noise_norm = np.sqrt(np.prod(x.shape[1:])) # 56
             langevin_step_size = 2 * (snr * noise_norm / grad_norm)**2
             x = x + langevin_step_size * grad + torch.sqrt(2*langevin_step_size) * torch.random.randn(x.shape)
 
@@ -200,7 +196,7 @@ class VE_SDE:
         return x_mean
 
 def train_scoreNet(data_loader, batch_size, width, height):
-    scoreNet = ScoreNet2D(batch_size, 1, width, height)
+    scoreNet = ScoreNet(marginal_prob_std)
     scoreNet = scoreNet.to(DEVICE)
     scoreNet_optimizer = torch.optim.Adam(scoreNet.parameters(), lr = 1e-4)
 
@@ -211,7 +207,7 @@ def train_scoreNet(data_loader, batch_size, width, height):
             x, y = feed_dict
             x = x.to(DEVICE)
             scoreNet_loss = loss_fn(scoreNet, x, marginal_prob_std = marginal_prob_std)
-            loss.append(scoreNet_loss.detach().numpy())
+            loss.append(scoreNet_loss.cpu().detach().numpy())
             scoreNet_optimizer.zero_grad()
             scoreNet_loss.backward()
             scoreNet_optimizer.step()
@@ -231,28 +227,29 @@ def unit_test_ve_sde():
 
     # file_names = os.listdir(train_dir)[:1]
     # data_loader = get_img_dataloader(train_dir, file_names, batch_size)
-    # scoreNet = train_scoreNet(data_loader, batch_size, 400, 400)
+    # scoreNet = train_scoreNet(data_loader, batch_size, 56, 56)
 
 
     dataset = MNIST('.', train=True, transform=transforms.ToTensor(), download=True)    
-    resize_img = transforms.Resize((400, 400))
+    # resize_img = transforms.Resize((56, 56))
     dataset_resize = []
     n_images = 5000
     cnt = 0
     for x, y in dataset:
         cnt += 1
-        x = resize_img(x)
-        dataset_resize.append([x, y])
+        im = x.cpu().detach().numpy()
+        im_rep = im.repeat(2, axis=1).repeat(2, axis=2)
+        dataset_resize.append([im_rep, y])
         if cnt > n_images:
             break;
     data_loader = DataLoader(dataset_resize[:n_images], batch_size=BATCH_SIZE, shuffle=True)
-    scoreNet = train_scoreNet(data_loader, BATCH_SIZE, 400, 400)
+    scoreNet = train_scoreNet(data_loader, BATCH_SIZE, 56, 56)
 
-    ve_model = VE_SDE(BATCH_SIZE, 400, 400, scoreNet=scoreNet)    
+    ve_model = VE_SDE(BATCH_SIZE, 56, 56, scoreNet=scoreNet)    
     
     t = torch.ones(BATCH_SIZE) # initial time이라 1을 넣는가봄
     std = marginal_prob_std(t)[:, None, None, None]
-    x = torch.random.randn((32, 400, 400, 1)) * std
+    x = torch.rand((32, 56, 56, 1)) * std
 
     denoised_x = ve_model.run_pc_sampler(x)
     plot_imgs(denoised_x)
@@ -275,13 +272,13 @@ def unit_test_scorenet():
     batch_size = 1
 
     dataset = MNIST('.', train=True, transform=transforms.ToTensor(), download=True)
-    resize_img = transforms.Resize((400, 400))
+    resize_img = transforms.Resize((56, 56))
     dataset_resize = []
     for x, y in dataset:
         x = resize_img(x)
         dataset_resize.append([x, y])
     data_loader = DataLoader(dataset_resize[:5], batch_size=batch_size, shuffle=True)
-    scoreNet = train_scoreNet(data_loader, batch_size, 400, 400)
+    scoreNet = train_scoreNet(data_loader, batch_size, 56, 56)
 
     random_t = torch.rand(x.shape[0], device=DEVICE)
     score = scoreNet(x[None, :, :, :], random_t)
