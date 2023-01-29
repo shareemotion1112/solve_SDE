@@ -243,7 +243,18 @@ for x, y in dataset:
     # if cnt > n_images:
     #     break;
 data_loader = DataLoader(dataset_resize, batch_size=BATCH_SIZE, shuffle=True)
-scoreNet = train_scoreNet(data_loader, BATCH_SIZE, 56, 56)
+scoreNet = None
+
+
+IS_SAVE_MODEL = False
+
+if IS_SAVE_MODEL == True:
+    import os
+    scoreNet = train_scoreNet(data_loader, BATCH_SIZE, 56, 56)
+    torch.save(scoreNet.state_dict(), os.getcwd() + '/torch_model.pt')
+else:
+    import os
+    scoreNet = torch.load(os.getcwd() + '/torch_model.pt')
 
 ve_model = VE_SDE(BATCH_SIZE, 56, 56, scoreNet=scoreNet)    
 
