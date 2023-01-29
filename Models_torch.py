@@ -22,7 +22,7 @@ class GaussianFourierProjection(nn.Module):
     super().__init__()
     # Randomly sample weights during initialization. These weights are fixed 
     # during optimization and are not trainable.
-    self.W = nn.Parameter(torch.randn(embed_dim // 2) * scale, requires_grad=False)
+    self.W = nn.Parameter(torch.randn(embed_dim // 2) * scale, requires_grad=False).to(DEVICE)
   def forward(self, t):
     x_proj = t[:, None] * self.W[None, :] * 2 * np.pi
     return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
@@ -188,10 +188,10 @@ class VE_SDE:
             g = self.diffusion_coef(batch_time_step)
             x_mean = x + (g**2)[:, None, None, None] * self.scoreNet(x, batch_time_step) * step_size
             x = x_mean + torch.sqrt(g**2 * step_size)[:, None, None, None] * torch.randn(x.shape).to(DEVICE)
-            # if i % 100 == 0:
-            #     plot_imgs(x)
-            #     plt.pause(1)
-            #     plt.close()   
+            if i % 100 == 0:
+                plot_imgs(x)
+                plt.pause(1)
+                plt.close()   
         # The last step does not include any noise !!!!!!
         return x_mean
 
@@ -254,7 +254,10 @@ if IS_SAVE_MODEL == True:
     torch.save(scoreNet.state_dict(), os.getcwd() + '/torch_model.pt')
 else:
     import os
-    scoreNet = torch.load(os.getcwd() + '/torch_model.pt')
+    scoreNet = ScoreNet(marginal_prob_std)
+    scoreNet.to(DEVICE)
+    scoreNet.load_state_dict(torch.load(os.getcwd() + '/torch_model.pt'), strict=False)
+    scoreNet.eval()
 
 ve_model = VE_SDE(BATCH_SIZE, 56, 56, scoreNet=scoreNet)    
 
