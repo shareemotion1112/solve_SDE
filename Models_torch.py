@@ -174,24 +174,24 @@ class VE_SDE:
         time_steps = np.linspace(1., eps, num_steps)
         step_size = time_steps[0] - time_steps[1]
         
-        for i, time_step in enumerate(tqdm(time_steps)):
-            batch_time_step = torch.ones(self.n_batch) * time_step
-
+        for i, time_step in enumerate(tqdm.tqdm(time_steps)):
+            batch_time_step = torch.ones(self.n_batch).to(DEVICE) * time_step
+            
             # corrector step (Langevin MCMC)
             grad = self.scoreNet(x, batch_time_step)            
             grad_norm = torch.norm(grad.reshape(grad.shape[0], -1), dim=-1).mean()
             noise_norm = np.sqrt(np.prod(x.shape[1:])) # 56
             langevin_step_size = 2 * (snr * noise_norm / grad_norm)**2
-            x = x + langevin_step_size * grad + torch.sqrt(2*langevin_step_size) * torch.random.randn(x.shape)
+            x = x + langevin_step_size * grad + torch.sqrt(2*langevin_step_size) * torch.randn(x.shape).to(DEVICE)
 
             # predictor step (Euler-Maruyama)
             g = self.diffusion_coef(batch_time_step)
             x_mean = x + (g**2)[:, None, None, None] * self.scoreNet(x, batch_time_step) * step_size
-            x = x_mean + torch.sqrt(g**2 * step_size)[:, None, None, None] * torch.random.randn(x.shape)
-            if i % 10 == 0:
-                plot_imgs(x)
-                plt.pause(0.1)
-                plt.close()   
+            x = x_mean + torch.sqrt(g**2 * step_size)[:, None, None, None] * torch.randn(x.shape).to(DEVICE)
+            # if i % 100 == 0:
+            #     plot_imgs(x)
+            #     plt.pause(1)
+            #     plt.close()   
         # The last step does not include any noise !!!!!!
         return x_mean
 
@@ -200,7 +200,7 @@ def train_scoreNet(data_loader, batch_size, width, height):
     scoreNet = scoreNet.to(DEVICE)
     scoreNet_optimizer = torch.optim.Adam(scoreNet.parameters(), lr = 1e-4)
 
-    epochs = 10
+    epochs = 50
     for i in range(epochs):
         loss = []
         for i_batch, feed_dict in enumerate(tqdm.tqdm(data_loader)):
@@ -215,76 +215,44 @@ def train_scoreNet(data_loader, batch_size, width, height):
     return scoreNet
 
 
-def unit_test_ve_sde():
-    from torch.utils.data import DataLoader
-    import torchvision.transforms as transforms
-    from torchvision.datasets import MNIST
 
-    # n_channel = 1
-    # train_dir = os.path.join(base_dir,'train')
-    # test_dir = os.path.join(base_dir,'test1')
+from torch.utils.data import DataLoader
+import torchvision.transforms as transforms
+from torchvision.datasets import MNIST
 
-
-    # file_names = os.listdir(train_dir)[:1]
-    # data_loader = get_img_dataloader(train_dir, file_names, batch_size)
-    # scoreNet = train_scoreNet(data_loader, batch_size, 56, 56)
+# n_channel = 1
+# train_dir = os.path.join(base_dir,'train')
+# test_dir = os.path.join(base_dir,'test1')
 
 
-    dataset = MNIST('.', train=True, transform=transforms.ToTensor(), download=True)    
-    # resize_img = transforms.Resize((56, 56))
-    dataset_resize = []
-    n_images = 5000
-    cnt = 0
-    for x, y in dataset:
-        cnt += 1
-        im = x.cpu().detach().numpy()
-        im_rep = im.repeat(2, axis=1).repeat(2, axis=2)
-        dataset_resize.append([im_rep, y])
-        if cnt > n_images:
-            break;
-    data_loader = DataLoader(dataset_resize[:n_images], batch_size=BATCH_SIZE, shuffle=True)
-    scoreNet = train_scoreNet(data_loader, BATCH_SIZE, 56, 56)
+# file_names = os.listdir(train_dir)[:1]
+# data_loader = get_img_dataloader(train_dir, file_names, batch_size)
+# scoreNet = train_scoreNet(data_loader, batch_size, 56, 56)
 
-    ve_model = VE_SDE(BATCH_SIZE, 56, 56, scoreNet=scoreNet)    
-    
-    t = torch.ones(BATCH_SIZE) # initial time이라 1을 넣는가봄
-    std = marginal_prob_std(t)[:, None, None, None]
-    x = torch.rand((32, 56, 56, 1)) * std
 
+dataset = MNIST('.', train=True, transform=transforms.ToTensor(), download=True)    
+# resize_img = transforms.Resize((56, 56))
+dataset_resize = []
+n_images = 5000
+# cnt = 0
+for x, y in dataset:
+    # cnt += 1
+    im = x.cpu().detach().numpy()
+    im_rep = im.repeat(2, axis=1).repeat(2, axis=2)
+    dataset_resize.append([im_rep, y])
+    # if cnt > n_images:
+    #     break;
+data_loader = DataLoader(dataset_resize, batch_size=BATCH_SIZE, shuffle=True)
+scoreNet = train_scoreNet(data_loader, BATCH_SIZE, 56, 56)
+
+ve_model = VE_SDE(BATCH_SIZE, 56, 56, scoreNet=scoreNet)    
+
+t = torch.ones(BATCH_SIZE, device=DEVICE) # initial time이라 1을 넣는가봄
+std = marginal_prob_std(t)[:, None, None, None]
+x = torch.rand((32, 1, 56, 56)).to(DEVICE) * std
+
+import matplotlib.pyplot as plt
+with torch.no_grad():
     denoised_x = ve_model.run_pc_sampler(x)
     plot_imgs(denoised_x)
 
-
-    # # 데이터의 가운데를 지우고 테스트 
-    # offset = 50
-    # for x, y in data_loader:
-    #     x_cp = x.clone()
-    #     x_cp[:, :, (200-offset):(200+offset), (200-offset):(200+offset)] = 0
-    #     denoising_x = ve_model.run_pc_sampler(x_cp)
-    #     plot(x, scoreNet(x, 1), denoising_x, name=["origin", "score", "denoised"])
-
-
-def unit_test_scorenet():    
-    from torch.utils.data import DataLoader
-    import torchvision.transforms as transforms
-    from torchvision.datasets import MNIST
-
-    batch_size = 1
-
-    dataset = MNIST('.', train=True, transform=transforms.ToTensor(), download=True)
-    resize_img = transforms.Resize((56, 56))
-    dataset_resize = []
-    for x, y in dataset:
-        x = resize_img(x)
-        dataset_resize.append([x, y])
-    data_loader = DataLoader(dataset_resize[:5], batch_size=batch_size, shuffle=True)
-    scoreNet = train_scoreNet(data_loader, batch_size, 56, 56)
-
-    random_t = torch.rand(x.shape[0], device=DEVICE)
-    score = scoreNet(x[None, :, :, :], random_t)
-    plot(score)
-
-
-
-unit_test_ve_sde()
-# unit_test_scorenet()

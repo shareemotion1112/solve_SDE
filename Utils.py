@@ -1,6 +1,7 @@
 import torch
 from Contant import DEVICE
 import numpy as np
+import matplotlib.pyplot as plt
 
 def convert_to_torch_tensor(arr):
     return torch.from_numpy(arr).float().to(DEVICE)
@@ -38,13 +39,23 @@ def plot(*args, name=None):
 
 
 def plot_imgs(x):
+    import matplotlib.pyplot as plt
     n_images = x.shape[0]
     n_row = int(np.ceil(np.sqrt(n_images)))
     n_col = int(n_row + 1)
-    for i in range(1, n_images):
-        plt.subplot(n_row, n_col, i)
-        plt.imshow(x[i, :, :, :])        
-        plt.axis('off')    
+    if DEVICE.type == "cuda":
+        x = x.cpu().detach().numpy()
+        x = np.squeeze(x, axis=1)
+        for i in range(1, n_images):
+            img = x[i, :, :]
+            plt.subplot(n_row, n_col, i)        
+            plt.imshow(img)        
+            plt.axis('off')    
+    else:
+        for i in range(1, n_images):
+            plt.subplot(n_row, n_col, i)        
+            plt.imshow(x[i, :, :, :])        
+            plt.axis('off')    
     plt.subplots_adjust(hspace=0)
     plt.show(block=False)
 
