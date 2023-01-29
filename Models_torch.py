@@ -1,15 +1,19 @@
-import torch, gc
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from Contant import DEVICE
 import numpy as np
 from cPrint import pp
-from Utils import convert_to_torch_tensor, plot
-from tqdm import trange
-import gc
+from Utils import convert_to_torch_tensor, plot, plot_imgs
+import tqdm 
+import matplotlib.pyplot as plt
 
-SIGMA = torch.tensor(0.05)
-TIME_STEP = 0.01
+
+SIGMA = torch.tensor(25.)
+BATCH_SIZE = 32
+
+
+
 
 
 class GaussianFourierProjection(nn.Module):
@@ -43,7 +47,7 @@ def marginal_prob_std(t, sigma = SIGMA):
 def loss_fn(model, x, marginal_prob_std, eps=1e-5):
     random_t = torch.rand(x.shape[0], device=DEVICE) * (1. - eps) + eps
     # pp(x.size())
-    z = torch.randint(0, 255, x.size(), device=DEVICE)
+    z = torch.randn(x.size(), device=DEVICE)
     std = marginal_prob_std(random_t)
     perturbed_x = x + z * std[:, None, None, None]
     score = model(perturbed_x, random_t)
@@ -137,7 +141,7 @@ class ScoreNet2D(nn.Module):
     def forward(self, x, t): # t는 loss_fn에 정의된 random_t가 들어감
         if type(x) == np.ndarray:
             x = convert_to_torch_tensor(x)
-        x_embed = self.embed(x); pp(f"x_embed : {x_embed.shape}")
+        x_embed = self.embed(x)
 
         self.down1 = DownSample(x_embed.shape[1], self.channels[0])
 
@@ -154,58 +158,46 @@ class ScoreNet2D(nn.Module):
         x = nnConv2d(x_up2)
         x_act = self.act(x)
 
-        denominator = marginal_prob_std(t)
+        denominator = marginal_prob_std(t)[:, None, None, None]
         x = x_act / denominator        
         return x 
 
 
 class VE_SDE:
-    def __init__(self, n_batch, width, height, predictor_steps = 100, corrector_steps = 10, scoreNet = None):
+    def __init__(self, n_batch, width, height, scoreNet = None):
         self.scoreNet = scoreNet
-        self.predictor_steps = predictor_steps
-        self.corrector_steps = corrector_steps
-        self.drift_coef = self.drift_func
-        self.diffusion_coef = 0
         self.n_batch = n_batch
         self.width = width
         self.height = height
         self.epsilon = torch.tensor(1e-5)
 
-    def sigma_func(self, t):
-        return t ** 2
+    def diffusion_coef(self, t, sigma=SIGMA):
+        return sigma ** t
+    
+    def run_pc_sampler(self, x, num_steps=500, eps=1e-3, snr=0.16):
+        time_steps = np.linspace(1., eps, num_steps)
+        step_size = time_steps[0] - time_steps[1]
+        
+        for i, time_step in enumerate(tqdm(time_steps)):
+            batch_time_step = torch.ones(self.n_batch) * time_step
 
-    def drift_func(self, t):
-        return torch.sqrt(2 * t) * torch.randn(1).to(DEVICE)
+            # corrector step (Langevin MCMC)
+            grad = self.scoreNet(x, batch_time_step)            
+            grad_norm = torch.norm(grad.reshape(grad.shape[0], -1), dim=-1).mean()
+            noise_norm = np.sqrt(np.prod(x.shape[1:])) # 400
+            langevin_step_size = 2 * (snr * noise_norm / grad_norm)**2
+            x = x + langevin_step_size * grad + torch.sqrt(2*langevin_step_size) * torch.random.randn(x.shape)
 
-    def predictor(self, x, i):        
-        t = i * TIME_STEP
-        sigma_diff = (self.sigma_func(t + 1)**2 - self.sigma_func(t)**2)
-        sigma_diff = torch.tensor(sigma_diff).to(DEVICE) # 'float' object has no attribute 'to'
-        x_i_prime = x + sigma_diff * self.scoreNet(x, t)
-        z = torch.randn(1).to(DEVICE) # 이거 평균이 0이고 표준편차가 1인 identity matrix인지 확인 필요 : checked!
-        x = x_i_prime + torch.sqrt(sigma_diff) * z            
-        return x
-    def corrector(self, x, j):
-        t = (j + 1) * TIME_STEP
-        z = torch.randn(1).to(DEVICE)
-
-        x = x + self.epsilon * self.scoreNet(x, t) + torch.sqrt(torch.abs(2 * self.epsilon)) * z
-
-        if torch.sum(torch.isnan(x)) > 0:
-            print(x)            
-        return x
-
-    def run_denoising(self, x):
-        x = x.to(DEVICE)
-        with torch.no_grad():
-            for i in trange(self.predictor_steps -1, 0, -1):
-                x = self.predictor(x, i)
-                for j in range(0, self.corrector_steps, 1):
-                    x = self.corrector(x, j)
-        return x
-
-    def run_predictor_only(self, x):
-        return self.predictor(x)
+            # predictor step (Euler-Maruyama)
+            g = self.diffusion_coef(batch_time_step)
+            x_mean = x + (g**2)[:, None, None, None] * self.scoreNet(x, batch_time_step) * step_size
+            x = x_mean + torch.sqrt(g**2 * step_size)[:, None, None, None] * torch.random.randn(x.shape)
+            if i % 10 == 0:
+                plot_imgs(x)
+                plt.pause(0.1)
+                plt.close()   
+        # The last step does not include any noise !!!!!!
+        return x_mean
 
 def train_scoreNet(data_loader, batch_size, width, height):
     scoreNet = ScoreNet2D(batch_size, 1, width, height)
@@ -213,15 +205,17 @@ def train_scoreNet(data_loader, batch_size, width, height):
     scoreNet_optimizer = torch.optim.Adam(scoreNet.parameters(), lr = 1e-4)
 
     epochs = 10
-    for x, y in data_loader:
-        # print('|', end="")
-        x = x.to(DEVICE)
-        for i in range(epochs):
+    for i in range(epochs):
+        loss = []
+        for i_batch, feed_dict in enumerate(tqdm.tqdm(data_loader)):
+            x, y = feed_dict
+            x = x.to(DEVICE)
             scoreNet_loss = loss_fn(scoreNet, x, marginal_prob_std = marginal_prob_std)
+            loss.append(scoreNet_loss.detach().numpy())
             scoreNet_optimizer.zero_grad()
             scoreNet_loss.backward()
             scoreNet_optimizer.step()
-            print(f"epochs : {i}, loss : {scoreNet_loss}")
+        print(f"epochs : {i}, loss : {np.mean(loss)}")
     return scoreNet
 
 
@@ -230,10 +224,6 @@ def unit_test_ve_sde():
     import torchvision.transforms as transforms
     from torchvision.datasets import MNIST
 
-    base_dir = "/Users/shareemotion/Projects/Solve_SDE/Data"
-    batch_size = 1
-    predictor_steps = 10 # 너무 노이즈를 많이 넣어도 학습이 안될 듯
-    corrector_steps = 50
     # n_channel = 1
     # train_dir = os.path.join(base_dir,'train')
     # test_dir = os.path.join(base_dir,'test1')
@@ -247,42 +237,34 @@ def unit_test_ve_sde():
     dataset = MNIST('.', train=True, transform=transforms.ToTensor(), download=True)    
     resize_img = transforms.Resize((400, 400))
     dataset_resize = []
+    n_images = 5000
     cnt = 0
     for x, y in dataset:
         cnt += 1
-        if cnt > 200:
-            break
         x = resize_img(x)
         dataset_resize.append([x, y])
-    data_loader = DataLoader(dataset_resize[:10], batch_size=batch_size, shuffle=True)
-    scoreNet = train_scoreNet(data_loader, batch_size, 400, 400)
+        if cnt > n_images:
+            break;
+    data_loader = DataLoader(dataset_resize[:n_images], batch_size=BATCH_SIZE, shuffle=True)
+    scoreNet = train_scoreNet(data_loader, BATCH_SIZE, 400, 400)
 
-    ve_model = VE_SDE(batch_size, 400, 400, scoreNet=scoreNet, \
-                        predictor_steps = predictor_steps, corrector_steps=corrector_steps)
-    # for x, y in data_loader:
-    #     denoising_x = ve_model.run_denoising(x)
-    #     pp("denoising x : {denoising_x.shape}")
-    #     plot(x, scoreNet(x, 1), denoising_x)
-        # predictor_x = ve_model.run_predictor_only(x)
-        # plot(x, scoreNet(x, 1), predictor_x, denoising_x)
-
-    # # random matrix check : 아예 random한 데이터는 어려운 듯    
-    # x = torch.abs(torch.randn((1, 1, 400, 400)))
-    # for i in range(1000):
-    #     denoised_x = ve_model.run_denoising(x)        
-    #     x = denoised_x
-    #     plot(scoreNet(x, 1), denoised_x)
-    # import matplotlib.pyplot as plt
-    # plt.imshow(denoised_x[0, 0, :, :].cpu().detach().numpy(), cmap='gray')
-    # plt.show()
+    ve_model = VE_SDE(BATCH_SIZE, 400, 400, scoreNet=scoreNet)    
     
-    # 데이터의 가운데를 지우고 테스트 
-    offset = 50
-    for x, y in data_loader:
-        x_cp = x.clone()
-        x_cp[:, :, (200-offset):(200+offset), (200-offset):(200+offset)] = 0
-        denoising_x = ve_model.run_denoising(x_cp)
-        plot(x, scoreNet(x, 1), denoising_x, name=["origin", "score", "denoised"])
+    t = torch.ones(BATCH_SIZE) # initial time이라 1을 넣는가봄
+    std = marginal_prob_std(t)[:, None, None, None]
+    x = torch.random.randn((32, 400, 400, 1)) * std
+
+    denoised_x = ve_model.run_pc_sampler(x)
+    plot_imgs(denoised_x)
+
+
+    # # 데이터의 가운데를 지우고 테스트 
+    # offset = 50
+    # for x, y in data_loader:
+    #     x_cp = x.clone()
+    #     x_cp[:, :, (200-offset):(200+offset), (200-offset):(200+offset)] = 0
+    #     denoising_x = ve_model.run_pc_sampler(x_cp)
+    #     plot(x, scoreNet(x, 1), denoising_x, name=["origin", "score", "denoised"])
 
 
 def unit_test_scorenet():    

@@ -36,6 +36,19 @@ def plot(*args, name=None):
     plt.pause(1)
     plt.close()
 
+
+def plot_imgs(x):
+    n_images = x.shape[0]
+    n_row = int(np.ceil(np.sqrt(n_images)))
+    n_col = int(n_row + 1)
+    for i in range(1, n_images):
+        plt.subplot(n_row, n_col, i)
+        plt.imshow(x[i, :, :, :])        
+        plt.axis('off')    
+    plt.subplots_adjust(hspace=0)
+    plt.show(block=False)
+
+
 def get_rank(losses, training_loss):
     from copy import copy
     losses_c = copy(losses)
@@ -45,3 +58,4 @@ def get_rank(losses, training_loss):
         rank = [1]
 
     return len(rank)
+

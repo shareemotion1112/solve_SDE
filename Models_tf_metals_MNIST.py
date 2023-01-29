@@ -13,6 +13,7 @@ import tensorflow_addons as tfa
 import time
 import math
 import copy
+from Utils import plot_imgs
 # tensorflow에서는 마지막 차원이 channel
 # input : [batch, in_height, in_width, in_channels] 형식. 28x28x1 형식의 손글씨 이미지.
 # filter : [filter_height, filter_width, in_channels, out_channels] 형식. 3, 3, 1, 32의 w.
@@ -264,18 +265,7 @@ else:
     scorenet = keras.models.load_model(model_path)
     
 
-
-def plot_imgs(x):
-    n_images = x.shape[0]
-    n_row = int(np.ceil(np.sqrt(n_images)))
-    n_col = int(n_row + 1)
-    for i in range(1, n_images):
-        plt.subplot(n_row, n_col, i)
-        plt.imshow(x[i, :, :, :])        
-        plt.axis('off')    
-    plt.subplots_adjust(hspace=0)
-    plt.show(block=False)
-            
+          
 
 
 class VE_SDE:

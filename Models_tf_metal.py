@@ -13,6 +13,7 @@ import tensorflow_addons as tfa
 import time
 import math
 import copy
+from Utils import plot_imgs
 # tensorflow에서는 마지막 차원이 channel
 # input : [batch, in_height, in_width, in_channels] 형식. 28x28x1 형식의 손글씨 이미지.
 # filter : [filter_height, filter_width, in_channels, out_channels] 형식. 3, 3, 1, 32의 w.
@@ -55,17 +56,6 @@ def generate_random(shape, min = None, max = None, type = tf.float32):
     else:
         return tf.random.uniform(shape, minval=min, maxval=max, dtype=type, seed=seed)
 
-
-def plot_imgs(x):
-    n_images = x.shape[0]
-    n_row = int(np.ceil(np.sqrt(n_images)))
-    n_col = int(n_row + 1)
-    for i in range(1, n_images):
-        plt.subplot(n_row, n_col, i)
-        plt.imshow(x[i, :, :, :])        
-        plt.axis('off')    
-    plt.subplots_adjust(hspace=0)
-    plt.show(block=False)
 
 def GaussianFourierProjection(x, embed_dim=256, scale=30):
     # tensorflow에서는 Weight, bias를 임의로 변경하는 것이 어려운 듯
@@ -325,7 +315,7 @@ class VE_SDE:
 
             # predictor step (Euler-Maruyama)
             g = self.diffusion_coef(batch_time_step)
-            x_mean = x + (g**2)[:, None, None, None] * scorenet(x, batch_time_step) * step_size
+            x_mean = x + (g**2)[:, None, None, None] * self.scoreNet(x, batch_time_step) * step_size
             x = x_mean + tf.sqrt(g**2 * step_size)[:, None, None, None] * generate_random(x.shape)
             if i % 10 == 0:
                 plot_imgs(x)
