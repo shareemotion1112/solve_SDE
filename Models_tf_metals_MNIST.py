@@ -20,14 +20,14 @@ from Utils import plot_imgs
 SIGMA = 25.
 IS_TRAIN_MODEL = True
 IS_SAVEFIG = False
-BATCH_SIZE = 64
+BATCH_SIZE = 32
 NUM_STEPS = 500
 EPS = 1e-3
-LEARNING_RATE = 1e-2
+LEARNING_RATE = 1e-4
 SNR = 0.16
 output_dim = 1
-epochs = 30
-n_images = 60000
+epochs = 50
+n_images = 1000
 
 data = tf.keras.datasets.mnist.load_data(path="mnist.npz")
 images = data[0][0][:n_images]
@@ -79,6 +79,7 @@ def generate_random(shape, min = None, max = None, type = tf.float32):
     else:
         return tf.random.uniform(shape, minval=min, maxval=max, dtype=type, seed=seed)
 
+# positional embedding을 하기 위함
 def GaussianFourierProjection(t, embed_dim=256, scale=30):
     # tensorflow에서는 Weight, bias를 임의로 변경하는 것이 어려운 듯
     # keras 패키지의 미리 만들어진 Weight를 사용    
@@ -96,15 +97,17 @@ def marginal_prob_std(t, sigma = SIGMA):
     return tf.math.sqrt((sigma**(2 * t) - 1.) / 2. / tf.math.log(sigma))
 
 
-
+# 가우시안 noise를 상쇄시키는 방향으로 scorenet을 학습
 def loss_fn(model, x, marginal_prob_std, eps=1e-5): # ------------------ random t 를 사용??
     random_t = generate_random([BATCH_SIZE]) * (1. - eps) + eps
     z = generate_random(x.shape) # z : 0 ~ 255까지의 크기인줄 알았는데 0~1사이 숫자임
     z = tf.cast(z, dtype=tf.float32)
     std = marginal_prob_std(random_t)
     perturbed_x = x + z * std[:, None, None]
-    score = model(perturbed_x, random_t)
-    sum = tf.reduce_sum((score * std + z[:, :, :, None])**2, axis=(1, 2, 3))
+    score = model([perturbed_x, random_t])
+
+    # 차원에 주위해서 더할 것...
+    sum = tf.reduce_sum((score * std[:, None, None, None] + z[..., None])**2, axis=(1, 2, 3)) # 1467767
 
     loss = tf.reduce_mean(sum)
     return loss
@@ -131,12 +134,13 @@ class myConv2D(keras.Model):
     def call(self, x):
         return self.conv2d(x)
 
+# SiLU라는 activation의 형태 : https://pytorch.org/docs/stable/generated/torch.nn.SiLU.html
 class myAct(keras.Model):
     def __init__(self):
         super(myAct, self).__init__()
-        self.act = tf.sigmoid
+        self.act = lambda x: x * tf.sigmoid(x)
     def call(self, x):
-        x = x * self.act(x)
+        x = self.act(x)
         return x
 
 class myGN(keras.Model):
@@ -170,18 +174,19 @@ def ScoreNet2D(x, t, channels=[32, 64, 128, 256]):
     h4 = myAct()(h4)
 
     #decoding path
-    h = myConv2DTrans(channels[2], 3, 2, "same")(h4)
+    h = myConv2DTrans(channels[2], 2, 2, "same")(h4)
     h += myDense(channels[2])(embed)[:, None, None, :]
     h = myGN(channels[2])(h)
     h = myAct()(h)
-    h = myConv2DTrans(channels[1], 3, 2, "same")(tf.concat([h, h3], axis=-1))
+    h = myConv2DTrans(channels[1], 2, 2, "same")(tf.concat([h, h3], axis=-1))
     h += myDense(channels[1])(embed)[:, None, None, :]
     h = myGN(channels[1])(h)
-    h = myConv2DTrans(channels[0], 3, 2, "same")(tf.concat([h, h2], axis=-1))
+    h = myAct()(h) # 이거 하나 빠졋다고 loss가 잘 안떨어지나????
+    h = myConv2DTrans(channels[0], 2, 2, "same")(tf.concat([h, h2], axis=-1))
     h += myDense(channels[0])(embed)[:, None, None, :]
     h = myGN(channels[0])(h)
     h = myAct()(h)
-    h = myConv2DTrans(1, 3, 1, "same")(tf.concat([h, h1], axis=-1))
+    h = myConv2DTrans(1, 1, 1, "same")(tf.concat([h, h1], axis=-1))
     denominator = marginal_prob_std(t)
     out = h / denominator[:, None, None, None]
     return out
@@ -190,20 +195,20 @@ def ScoreNet2D(x, t, channels=[32, 64, 128, 256]):
 # @tf.function # not working in Using a symbolic `tf.Tensor` as a Python `bool` is not allowed ????
 def train():
     train_loss = tf.keras.metrics.Mean()
-    random_t = tf.ones(BATCH_SIZE) * generate_random([]) # 같은 값으로 된 배열이어야 함
 
     x = keras.Input((56, 56, 1))
-    y = ScoreNet2D(x, random_t)
-    scorenet = keras.Model(inputs=x, outputs=y)
+    t = keras.Input(()) # embedding layer 연결을 위해 설정함
+    y = ScoreNet2D(x, t)
+    scorenet = keras.Model(inputs=[x, t], outputs=y)
     print(scorenet.summary())
 
     optimizer = Adam(learning_rate=LEARNING_RATE)
     losses = []
-    lr_schedule = ExponentialDecay(LEARNING_RATE, 200,.9)
+    # lr_schedule = ExponentialDecay(LEARNING_RATE, 100,.1)
     epoch = 0
     while True:
         num_items = 0
-        optimizer.learning_rate = lr_schedule(epoch)
+        # optimizer.learning_rate = lr_schedule(epoch)
         for i in trange(len(dataset)):        
             x = dataset[i]
             num_items += x.shape[0]
@@ -212,9 +217,9 @@ def train():
                 train_loss(loss)
             grads = tape.gradient(loss, scorenet.trainable_variables)
             optimizer.apply_gradients(zip(grads, scorenet.trainable_variables))
-        current_loss = train_loss.result() / num_items * x.shape[0]
+        current_loss = train_loss.result()
         losses.append(current_loss)
-        print(f"{epoch} : {current_loss}")
+        print(f"{epoch} : {current_loss / BATCH_SIZE}")
         epoch += 1
 
         if get_rank(losses, current_loss) > 2:
@@ -232,7 +237,9 @@ if IS_TRAIN_MODEL is True:
     model_path = os.getcwd() + '/' + filename
     scorenet.save(model_path)
 
-    pred = scorenet(x)
+    x = dataset[0]
+    t = t = tf.ones(BATCH_SIZE)
+    pred = scorenet([x, t])
     for i in range(BATCH_SIZE):
         plt.subplot(1, 2, 1)
         plt.imshow(x[i, :, :])
@@ -283,16 +290,16 @@ class VE_SDE:
             batch_time_step = tf.ones(self.n_batch) * time_step
 
             # corrector step (Langevin MCMC)
-            grad = self.scoreNet(x, batch_time_step)
+            grad = self.scoreNet([x, batch_time_step])
             grad_norm = tf.math.reduce_mean(tf.norm(tf.reshape(grad, (grad.shape[0], -1)), axis=-1))
-            noise_norm = np.sqrt(np.prod(x.shape[1:])) # 400
+            noise_norm = np.sqrt(np.prod(x.shape[1:])) # 차원의 곱에 sqrt
             langevin_step_size = 2 * (snr * noise_norm / grad_norm)**2
             x = x + langevin_step_size * grad + tf.sqrt(2*langevin_step_size) * generate_random(x.shape)
             # predictor step (Euler -Maruyama)
             g = self.diffusion_coef(batch_time_step)
-            x_mean = x + (g**2)[:, None, None, None] * scorenet(x, batch_time_step) * step_size
+            x_mean = x + (g**2)[:, None, None, None] * scorenet([x, batch_time_step]) * step_size
             x = x_mean + tf.sqrt(g**2 * step_size)[:, None, None, None] * generate_random(x.shape)
-            if i % 100 == 0:
+            if i % 20 == 0:
                 plot_imgs(x)
                 plt.pause(0.1)
                 plt.close()            
@@ -303,7 +310,7 @@ class VE_SDE:
 ve_model = VE_SDE(BATCH_SIZE, scorenet)
 
 
-t = tf.ones(BATCH_SIZE) # initial time이라 1을 넣는가봄
+t = tf.ones(BATCH_SIZE)
 std = marginal_prob_std(t)[:, None, None, None]
 x = tf.random.uniform((BATCH_SIZE, 56, 56, 1), seed=np.random.randint(0, 10000)) * std
 

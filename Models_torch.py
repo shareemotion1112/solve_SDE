@@ -44,8 +44,6 @@ def loss_fn(model, x, marginal_prob_std, eps=1e-5):
     perturbed_x = x + z * std[:, None, None, None]
     score = model(perturbed_x, random_t)
 
-    pp(f"perturbed x : {perturbed_x.shape}, score : {score.shape}, std : {std.shape}, z : {z.shape}") 
-    pp(f"{(score * std[:, None, None, None] + z)**2}")
     loss = torch.mean(torch.sum((score * std[:, None, None, None] + z)**2, dim=(1,2,3)))
     return loss
 
@@ -158,6 +156,8 @@ class ScoreNet(nn.Module):
         h = h / self.marginal_prob_std(t)[:, None, None, None]
         return h
 
+model = ScoreNet(marginal_prob_std)
+print(model)
 
 class VE_SDE:
     def __init__(self, n_batch, width, height, scoreNet = None):
@@ -211,7 +211,7 @@ def train_scoreNet(data_loader, batch_size, width, height):
             scoreNet_optimizer.zero_grad()
             scoreNet_loss.backward()
             scoreNet_optimizer.step()
-        print(f"epochs : {i}, loss : {np.mean(loss)}")
+        print(f"epochs : {i}, loss : {np.mean(loss)/BATCH_SIZE}")
     return scoreNet
 
 
@@ -246,7 +246,7 @@ data_loader = DataLoader(dataset_resize, batch_size=BATCH_SIZE, shuffle=True)
 scoreNet = None
 
 
-IS_SAVE_MODEL = False
+IS_SAVE_MODEL = True
 
 if IS_SAVE_MODEL == True:
     import os
