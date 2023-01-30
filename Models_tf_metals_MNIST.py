@@ -7,36 +7,33 @@ from tensorflow.python import keras
 from keras.optimizers import Adam
 from keras.optimizers.schedules.learning_rate_schedule import ExponentialDecay
 from keras.layers import Conv2D, Conv2DTranspose, Dense
-from keras.losses import mse
 from tqdm import trange, tqdm
 import tensorflow_addons as tfa
 import time
 import math
-import copy
 from Utils import plot_imgs
 # tensorflow에서는 마지막 차원이 channel
 # input : [batch, in_height, in_width, in_channels] 형식. 28x28x1 형식의 손글씨 이미지.
 # filter : [filter_height, filter_width, in_channels, out_channels] 형식. 3, 3, 1, 32의 w.
-import os
 
 
 SIGMA = 25.
 IS_TRAIN_MODEL = True
 IS_SAVEFIG = False
-BATCH_SIZE = 32
+BATCH_SIZE = 64
 NUM_STEPS = 500
 EPS = 1e-3
 LEARNING_RATE = 1e-2
 SNR = 0.16
 output_dim = 1
-epochs = 10
+epochs = 30
 n_images = 60000
 
 data = tf.keras.datasets.mnist.load_data(path="mnist.npz")
 images = data[0][0][:n_images]
 
 class ImageDataset:
-    def __init__(self, images, batch_size=BATCH_SIZE, isResize=True):
+    def __init__(self, images, batch_size=BATCH_SIZE):
         self.images = images
         self.batch_size=batch_size
 
@@ -190,11 +187,8 @@ def ScoreNet2D(x, t, channels=[32, 64, 128, 256]):
     return out
 
 
-
-
-
-if IS_TRAIN_MODEL is True:
-    # train scoreNet
+# @tf.function # not working in Using a symbolic `tf.Tensor` as a Python `bool` is not allowed ????
+def train():
     train_loss = tf.keras.metrics.Mean()
     random_t = tf.ones(BATCH_SIZE) * generate_random([]) # 같은 값으로 된 배열이어야 함
 
@@ -227,6 +221,11 @@ if IS_TRAIN_MODEL is True:
             break;
         if epoch > epochs:
             break;
+    return scorenet
+
+if IS_TRAIN_MODEL is True:
+    # train scoreNet
+    scorenet = train()
     
     # save model
     filename = 'tf_metal_model_' + str(math.ceil(time.time()))
@@ -293,7 +292,7 @@ class VE_SDE:
             g = self.diffusion_coef(batch_time_step)
             x_mean = x + (g**2)[:, None, None, None] * scorenet(x, batch_time_step) * step_size
             x = x_mean + tf.sqrt(g**2 * step_size)[:, None, None, None] * generate_random(x.shape)
-            if i % 10 == 0:
+            if i % 100 == 0:
                 plot_imgs(x)
                 plt.pause(0.1)
                 plt.close()            
@@ -306,7 +305,7 @@ ve_model = VE_SDE(BATCH_SIZE, scorenet)
 
 t = tf.ones(BATCH_SIZE) # initial time이라 1을 넣는가봄
 std = marginal_prob_std(t)[:, None, None, None]
-x = tf.random.uniform((32, 56, 56, 1), seed=np.random.randint(0, 10000)) * std
+x = tf.random.uniform((BATCH_SIZE, 56, 56, 1), seed=np.random.randint(0, 10000)) * std
 
 denoised_x = ve_model.run_pc_sampler(x)
 plot_imgs(denoised_x)
