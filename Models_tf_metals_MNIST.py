@@ -21,7 +21,7 @@ import os
 
 
 SIGMA = 25.
-IS_TRAIN_MODEL = False
+IS_TRAIN_MODEL = True
 IS_SAVEFIG = False
 BATCH_SIZE = 32
 NUM_STEPS = 500
@@ -30,7 +30,7 @@ LEARNING_RATE = 1e-2
 SNR = 0.16
 output_dim = 1
 epochs = 10
-n_images = 30000
+n_images = 60000
 
 data = tf.keras.datasets.mnist.load_data(path="mnist.npz")
 images = data[0][0][:n_images]
