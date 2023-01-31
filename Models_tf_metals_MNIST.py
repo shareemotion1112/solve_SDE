@@ -1,5 +1,21 @@
+import argparse
+
+# 인자값을 받을 수 있는 인스턴스 생성
+parser = argparse.ArgumentParser(description='tf_metal score-based SDE test')
+
+# 입력받을 인자값 등록
+parser.add_argument('--train', required=False, help='모델을 새로 만들건지?', default=False)
+parser.add_argument('--epochs', required=False, help='learning rate', default=50)
+parser.add_argument('--n_images', required=False, help='learning rate', default=5000)
+parser.add_argument('--save_fig', required=False, help='그림 저장할건지?', default=False)
+parser.add_argument('--batch_size', required=False, help='batch_size', default=32)
+parser.add_argument('--lr', required=False, help='learning rate', default=1e-3)
+
+# 입력받은 인자값을 args에 저장 (type: namespace)
+args = parser.parse_args()
+
+
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # or any {'0', '1', '2'}
 import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
@@ -18,14 +34,18 @@ from Utils import plot_imgs
 
 
 SIGMA = 25.
-IS_TRAIN_MODEL = True
-IS_SAVEFIG = False
-BATCH_SIZE = 32
-LEARNING_RATE = 1e-3
+IS_TRAIN_MODEL = args.train
+IS_SAVEFIG = args.save_fig
+BATCH_SIZE = int(args.batch_size)
+LEARNING_RATE = float(args.lr)
+epochs = int(args.epochs)
+n_images = int(args.n_images)
 
-output_dim = 1
-epochs = 50
-n_images = 5000
+
+print(args.train)
+
+OUTPUT_DIM = 1
+
 
 data = tf.keras.datasets.mnist.load_data(path="mnist.npz")
 images = data[0][0][:n_images]
@@ -123,9 +143,9 @@ class myConv2DTrans(keras.Model):
         return x
 
 class myConv2D(keras.Model):
-    def __init__(self, output_dim, kernel_size, strides, padding):
+    def __init__(self, OUTPUT_DIM, kernel_size, strides, padding):
         super(myConv2D, self).__init__()
-        self.conv2d = Conv2D(output_dim, kernel_size=kernel_size, strides=strides, padding=padding, use_bias=False, name="conv2d")
+        self.conv2d = Conv2D(OUTPUT_DIM, kernel_size=kernel_size, strides=strides, padding=padding, use_bias=False, name="conv2d")
     def call(self, x):
         return self.conv2d(x)
 
@@ -224,6 +244,7 @@ def train():
     return scorenet
 
 if IS_TRAIN_MODEL is True:
+    print(f'\nIS_TRAIN_MODEL : {IS_TRAIN_MODEL} -> model train start\n')
     # train scoreNet
     scorenet = train()
     
@@ -309,8 +330,8 @@ t = tf.ones(BATCH_SIZE)
 std = marginal_prob_std(t)[:, None, None, None]
 x = tf.random.normal((BATCH_SIZE, 56, 56, 1), seed=np.random.randint(0, 10000)) * std
 
-denoised_x = ve_model.run_pc_sampler(x, num_steps=500, step_show_image = 100)
-plot_imgs(denoised_x)
+denoised_x = ve_model.run_pc_sampler(x, num_steps=500, step_show_image = 20)
+# plot_imgs(denoised_x)
 
 
 

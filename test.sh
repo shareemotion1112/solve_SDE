@@ -1,0 +1,1 @@
+python Models_tf_metals_MNIST.py --batch_size=64 --train=True --n_images=3000 --epochs=50
