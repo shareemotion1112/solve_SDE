@@ -21,13 +21,11 @@ SIGMA = 25.
 IS_TRAIN_MODEL = True
 IS_SAVEFIG = False
 BATCH_SIZE = 32
-NUM_STEPS = 500
-EPS = 1e-3
-LEARNING_RATE = 1e-4
-SNR = 0.16
+LEARNING_RATE = 1e-3
+
 output_dim = 1
 epochs = 50
-n_images = 1000
+n_images = 5000
 
 data = tf.keras.datasets.mnist.load_data(path="mnist.npz")
 images = data[0][0][:n_images]
@@ -39,28 +37,26 @@ class ImageDataset:
 
     def __len__(self):
         return self.images.shape[0] // self.batch_size
+    
+    def normalize(self, arr):
+        mn = np.min(arr)
+        mx = np.max(arr)
+        norm = (arr - mn) / (mx - mn)
+        return norm
 
     def __getitem__(self, idx):
         res_im = None        
         for i in range(idx * self.batch_size, (idx + 1) * self.batch_size, 1):
             im = np.array(self.images[i, :, :])
             im_upsampling = im.repeat(2, axis=0).repeat(2, axis=1)
+            im_normalized = self.normalize(im_upsampling)[None, :, :, None]
             if res_im is None:
-                res_im = im_upsampling[None, :, :]
+                res_im = im_normalized
             else:
-                res_im = np.concatenate((res_im, im_upsampling[None, :, :]), axis=0)
+                res_im = np.concatenate((res_im, im_normalized), axis=0)
         return res_im
 
 dataset = ImageDataset(images, batch_size=BATCH_SIZE)
-
-# check dataset
-# x = dataset[0]
-# for i in range(x.shape[0]):
-#     plt.imshow(x[i, :, :])
-#     plt.show(block=False)
-#     plt.pause(0.1)
-#     plt.close()
-
 
 
 def get_rank(losses, training_loss):
@@ -75,9 +71,9 @@ def get_rank(losses, training_loss):
 def generate_random(shape, min = None, max = None, type = tf.float32):
     seed = np.random.randint(0, 10000, 1)
     if min is None:
-        return tf.random.uniform(shape, seed=seed)
+        return tf.random.normal(shape, seed=seed)
     else:
-        return tf.random.uniform(shape, minval=min, maxval=max, dtype=type, seed=seed)
+        return tf.random.normal(shape, minval=min, maxval=max, dtype=type, seed=seed)
 
 # positional embedding을 하기 위함
 def GaussianFourierProjection(t, embed_dim=256, scale=30):
@@ -99,16 +95,15 @@ def marginal_prob_std(t, sigma = SIGMA):
 
 # 가우시안 noise를 상쇄시키는 방향으로 scorenet을 학습
 def loss_fn(model, x, marginal_prob_std, eps=1e-5): # ------------------ random t 를 사용??
-    random_t = generate_random([BATCH_SIZE]) * (1. - eps) + eps
+    random_t = tf.random.uniform([BATCH_SIZE]) * (1. - eps) + eps # 음수가 나오면 안됨    
     z = generate_random(x.shape) # z : 0 ~ 255까지의 크기인줄 알았는데 0~1사이 숫자임
     z = tf.cast(z, dtype=tf.float32)
     std = marginal_prob_std(random_t)
-    perturbed_x = x + z * std[:, None, None]
+    perturbed_x = x + z * std[:, None, None, None]
     score = model([perturbed_x, random_t])
 
-    # 차원에 주위해서 더할 것...
-    sum = tf.reduce_sum((score * std[:, None, None, None] + z[..., None])**2, axis=(1, 2, 3)) # 1467767
-
+    loss_content = (score * std[:, None, None, None] + z)**2
+    sum = tf.reduce_sum(loss_content, axis=(1, 2, 3))
     loss = tf.reduce_mean(sum)
     return loss
 
@@ -158,35 +153,35 @@ def ScoreNet2D(x, t, channels=[32, 64, 128, 256]):
     #encoding path
     h1 = myConv2D(channels[0], 3, 1, "same")(x)
     h1 += myDense(channels[0])(embed)[:, None, None, :]
-    h1 = myGN(channels[0])(h1)
+    h1 = myGN(4)(h1) # groupNorm : input channel(h1.shape[3])을 4 group으로 normalize
     h1 = myAct()(h1)
     h2 = myConv2D(channels[1], 3, 2, "same")(h1)
     h2 += myDense(channels[1])(embed)[:, None, None, :]
-    h2 = myGN(channels[1])(h2)
+    h2 = myGN(32)(h2)
     h2 = myAct()(h2)
-    h3 = myConv2D(channels[2], 3, 2, padding="same")(h2)
+    h3 = myConv2D(channels[2], 3, 2, "same")(h2)
     h3 += myDense(channels[2])(embed)[:, None, None, :]
-    h3 = myGN(channels[2])(h3)
+    h3 = myGN(32)(h3)
     h3 = myAct()(h3)
     h4 = myConv2D(channels[3], 3, 2, "same")(h3)
     h4 += myDense(channels[3])(embed)[:, None, None, :]
-    h4 = myGN(channels[3])(h4)
+    h4 = myGN(32)(h4)
     h4 = myAct()(h4)
 
     #decoding path
-    h = myConv2DTrans(channels[2], 2, 2, "same")(h4)
+    h = myConv2DTrans(channels[2], 2, 2, "valid")(h4)
     h += myDense(channels[2])(embed)[:, None, None, :]
-    h = myGN(channels[2])(h)
+    h = myGN(32)(h)
     h = myAct()(h)
-    h = myConv2DTrans(channels[1], 2, 2, "same")(tf.concat([h, h3], axis=-1))
+    h = myConv2DTrans(channels[1], 2, 2, "valid")(tf.concat([h, h3], axis=-1))
     h += myDense(channels[1])(embed)[:, None, None, :]
-    h = myGN(channels[1])(h)
+    h = myGN(32)(h)
     h = myAct()(h) # 이거 하나 빠졋다고 loss가 잘 안떨어지나????
-    h = myConv2DTrans(channels[0], 2, 2, "same")(tf.concat([h, h2], axis=-1))
+    h = myConv2DTrans(channels[0], 2, 2, "valid")(tf.concat([h, h2], axis=-1))
     h += myDense(channels[0])(embed)[:, None, None, :]
-    h = myGN(channels[0])(h)
+    h = myGN(32)(h)
     h = myAct()(h)
-    h = myConv2DTrans(1, 1, 1, "same")(tf.concat([h, h1], axis=-1))
+    h = myConv2DTrans(1, 1, 1, "valid")(tf.concat([h, h1], axis=-1))
     denominator = marginal_prob_std(t)
     out = h / denominator[:, None, None, None]
     return out
@@ -204,11 +199,11 @@ def train():
 
     optimizer = Adam(learning_rate=LEARNING_RATE)
     losses = []
-    # lr_schedule = ExponentialDecay(LEARNING_RATE, 100,.1)
+    lr_schedule = ExponentialDecay(LEARNING_RATE, epochs,.1)
     epoch = 0
     while True:
         num_items = 0
-        # optimizer.learning_rate = lr_schedule(epoch)
+        optimizer.learning_rate = lr_schedule(epoch)
         for i in trange(len(dataset)):        
             x = dataset[i]
             num_items += x.shape[0]
@@ -269,9 +264,8 @@ else:
 
     model_path = os.getcwd() + '/' + max_folder
     scorenet = keras.models.load_model(model_path)
-    
 
-          
+
 
 
 class VE_SDE:
@@ -282,7 +276,7 @@ class VE_SDE:
     def diffusion_coef(self, t, sigma=SIGMA):
         return sigma ** t
     
-    def run_pc_sampler(self, x, num_steps = NUM_STEPS, eps=EPS, snr=SNR):
+    def run_pc_sampler(self, x, num_steps = 500, eps=1e-3, snr=0.16, step_show_image = 100):
         time_steps = np.linspace(1., eps, num_steps)
         step_size = time_steps[0] - time_steps[1]
         
@@ -295,11 +289,12 @@ class VE_SDE:
             noise_norm = np.sqrt(np.prod(x.shape[1:])) # 차원의 곱에 sqrt
             langevin_step_size = 2 * (snr * noise_norm / grad_norm)**2
             x = x + langevin_step_size * grad + tf.sqrt(2*langevin_step_size) * generate_random(x.shape)
+
             # predictor step (Euler -Maruyama)
             g = self.diffusion_coef(batch_time_step)
             x_mean = x + (g**2)[:, None, None, None] * scorenet([x, batch_time_step]) * step_size
             x = x_mean + tf.sqrt(g**2 * step_size)[:, None, None, None] * generate_random(x.shape)
-            if i % 20 == 0:
+            if i % step_show_image == 0:
                 plot_imgs(x)
                 plt.pause(0.1)
                 plt.close()            
@@ -312,9 +307,9 @@ ve_model = VE_SDE(BATCH_SIZE, scorenet)
 
 t = tf.ones(BATCH_SIZE)
 std = marginal_prob_std(t)[:, None, None, None]
-x = tf.random.uniform((BATCH_SIZE, 56, 56, 1), seed=np.random.randint(0, 10000)) * std
+x = tf.random.normal((BATCH_SIZE, 56, 56, 1), seed=np.random.randint(0, 10000)) * std
 
-denoised_x = ve_model.run_pc_sampler(x)
+denoised_x = ve_model.run_pc_sampler(x, num_steps=500, step_show_image = 100)
 plot_imgs(denoised_x)
 
 

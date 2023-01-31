@@ -38,13 +38,13 @@ def marginal_prob_std(t, sigma = SIGMA):
 
 def loss_fn(model, x, marginal_prob_std, eps=1e-5):
     random_t = torch.rand(x.shape[0], device=DEVICE) * (1. - eps) + eps
-    # pp(x.size())
     z = torch.randn(x.size(), device=DEVICE)
     std = marginal_prob_std(random_t)
     perturbed_x = x + z * std[:, None, None, None]
     score = model(perturbed_x, random_t)
-
-    loss = torch.mean(torch.sum((score * std[:, None, None, None] + z)**2, dim=(1,2,3)))
+    
+    sum = torch.sum((score * std[:, None, None, None] + z)**2, dim=(1,2,3))
+    loss = torch.mean(sum)
     return loss
 
 
@@ -158,6 +158,8 @@ class ScoreNet(nn.Module):
 
 model = ScoreNet(marginal_prob_std)
 print(model)
+model_parameters = filter(lambda p: p.requires_grad, model.parameters())
+params = sum([np.prod(p.size()) for p in model_parameters])
 
 class VE_SDE:
     def __init__(self, n_batch, width, height, scoreNet = None):
@@ -233,7 +235,7 @@ from torchvision.datasets import MNIST
 dataset = MNIST('.', train=True, transform=transforms.ToTensor(), download=True)    
 # resize_img = transforms.Resize((56, 56))
 dataset_resize = []
-n_images = 5000
+n_images = 60000
 # cnt = 0
 for x, y in dataset:
     # cnt += 1
